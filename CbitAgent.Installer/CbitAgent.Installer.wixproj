@@ -1,0 +1,14 @@
+<Project Sdk="WixToolset.Sdk/6.0.2">
+
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <PublishDir>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\publish'))</PublishDir>
+    <PublishTrayDir>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\publish-tray'))</PublishTrayDir>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <DefineConstants>PublishDir=$(PublishDir);PublishTrayDir=$(PublishTrayDir)</DefineConstants>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+
+  <Package Name="CBIT RMM Agent"
+           Manufacturer="CBIT Inc."
+           Version="1.0.0"
+           UpgradeCode="7A2E4F3B-8D1C-4E5A-B6F9-0C3D2E1A5B8F"
+           Scope="perMachine"
+           InstallerVersion="500">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of CBIT RMM Agent is already installed." />
+    <Launch Condition="NOT Installed OR REMOVE" Message="CBIT RMM Agent is already installed. Uninstall the current version first, or install a newer version." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="CBITFOLDER" Name="CBIT">
+        <Directory Id="INSTALLFOLDER" Name="Agent" />
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="CBIT RMM Agent" Level="1">
+      <ComponentRef Id="CbitAgentExe" />
+      <ComponentRef Id="CbitTrayExe" />
+      <ComponentRef Id="CleanupOnUninstall" />
+    </Feature>
+
+    <!-- Launch tray app as the logged-in user after install/upgrade -->
+    <CustomAction Id="LaunchTray"
+                  FileRef="CbitTrayExeFile"
+                  ExeCommand=""
+                  Impersonate="yes"
+                  Return="asyncNoWait" />
+
+    <!-- Kill processes and stop service early during uninstall to prevent "files in use" prompt -->
+    <CustomAction Id="StopAgentService"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="sc.exe stop CbitRmmAgent"
+                  Execute="immediate"
+                  Return="ignore" />
+
+    <CustomAction Id="KillTrayProcess"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="taskkill.exe /f /im CbitAgent.Tray.exe"
+                  Execute="immediate"
+                  Return="ignore" />
+
+    <CustomAction Id="KillAgentProcess"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="taskkill.exe /f /im CbitAgent.exe"
+                  Execute="immediate"
+                  Return="ignore" />
+
+    <CustomAction Id="DeleteAgentService"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="sc.exe delete CbitRmmAgent"
+                  Execute="immediate"
+                  Return="ignore" />
+
+    <InstallExecuteSequence>
+      <!-- On uninstall: stop service → kill processes → delete service, all before InstallValidate -->
+      <Custom Action="StopAgentService" Before="KillTrayProcess" Condition="REMOVE" />
+      <Custom Action="KillTrayProcess" Before="KillAgentProcess" Condition="REMOVE" />
+      <Custom Action="KillAgentProcess" Before="DeleteAgentService" Condition="REMOVE" />
+      <Custom Action="DeleteAgentService" Before="InstallValidate" Condition="REMOVE" />
+      <!-- On install/upgrade: launch tray app after everything is in place -->
+      <Custom Action="LaunchTray" After="InstallFinalize" Condition="NOT REMOVE" />
+    </InstallExecuteSequence>
+
+  </Package>
+</Wix>

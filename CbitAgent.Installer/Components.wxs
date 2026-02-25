@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+
+  <Fragment>
+    <Component Id="CbitAgentExe" Directory="INSTALLFOLDER"
+               Guid="A1B2C3D4-E5F6-7890-ABCD-EF1234567890" Bitness="always64">
+
+      <File Id="CbitAgentExeFile"
+            Source="$(var.PublishDir)\CbitAgent.exe"
+            KeyPath="yes" />
+
+      <ServiceInstall Id="CbitAgentService"
+                      Name="CbitRmmAgent"
+                      DisplayName="CBIT RMM Agent"
+                      Description="CBIT Remote Monitoring and Management Agent"
+                      Type="ownProcess"
+                      Start="auto"
+                      Account="LocalSystem"
+                      ErrorControl="normal" />
+
+      <ServiceControl Id="ControlCbitAgent"
+                      Name="CbitRmmAgent"
+                      Start="install"
+                      Stop="both"
+                      Remove="uninstall"
+                      Wait="yes" />
+    </Component>
+  </Fragment>
+
+  <Fragment>
+    <Component Id="CbitTrayExe" Directory="INSTALLFOLDER"
+               Guid="B2C3D4E5-F6A7-8901-BCDE-F12345678901" Bitness="always64">
+
+      <File Id="CbitTrayExeFile"
+            Source="$(var.PublishTrayDir)\CbitAgent.Tray.exe"
+            KeyPath="yes" />
+
+      <RegistryValue Root="HKLM"
+                     Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+                     Name="CBITSupportTray"
+                     Type="string"
+                     Value="&quot;[INSTALLFOLDER]CbitAgent.Tray.exe&quot;" />
+    </Component>
+  </Fragment>
+
+  <!-- Cleanup: remove config.json and any other non-MSI files, then the folders -->
+  <Fragment>
+    <Component Id="CleanupOnUninstall" Directory="INSTALLFOLDER"
+               Guid="C3D4E5F6-A7B8-9012-CDEF-123456789012" Bitness="always64">
+
+      <RegistryValue Root="HKLM"
+                     Key="SOFTWARE\CBIT\Agent"
+                     Name="Installed"
+                     Type="integer"
+                     Value="1"
+                     KeyPath="yes" />
+
+      <RemoveFile Id="CleanupAllFiles" Directory="INSTALLFOLDER" Name="*" On="uninstall" />
+      <RemoveFolder Id="CleanupInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+      <RemoveFolder Id="CleanupCbitFolder" Directory="CBITFOLDER" On="uninstall" />
+    </Component>
+  </Fragment>
+
+</Wix>
