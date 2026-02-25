@@ -22,6 +22,11 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 - WebSocket: wss://axis.gocbit.com/api/agent/ws
 - Auth: agent_token JWT in Authorization header for HTTP, query param for WebSocket
 
+## Repository
+- GitHub: https://github.com/gocbitinc/cbit-agent.git
+- Branch: main
+- Git identity: CBIT Inc. <support@gocbit.com>
+
 ## Solution Structure
 - CbitAgent/ — main agent service
 - CbitAgent.Tray/ — system tray support app
