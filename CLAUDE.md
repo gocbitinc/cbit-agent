@@ -9,6 +9,7 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 - WebSocket handles scan_updates, install_updates, install_kb, and reboot commands
 - Windows Update executor: scan, download, install KBs, policy-based filtering, reboot detection
 - HTTP check-in commands: install_kb (ad-hoc) and run_updates (policy-based) fully wired
+- PowerShell scripting engine: heartbeat-delivered script execution with file download, variable injection, timeout enforcement, result reporting
 - System tray app (CbitAgent.Tray): support request form with email field, screenshot capture, computer name popup on left-click
 - MSI installer includes both agent service and tray app, auto-start via Run registry key, full cleanup on uninstall
 - Agent runs as Windows Service "CbitRmmAgent" under LocalSystem
@@ -48,6 +49,8 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 - Services/TerminalSession.cs — cmd/powershell process with raw byte I/O
 - Services/WindowsUpdateExecutor.cs — WUApiLib COM: scan, install, policy filter, reboot check
 - Models/TerminalMessages.cs — WsMessage/WsOutMessage (terminal + WU fields)
+- Services/ScriptExecutor.cs — PowerShell script execution: file download, variable injection, process spawn, timeout, result reporting
+- Models/ScriptModels.cs — PendingScript, ScriptFile, PowerShellResult, ScriptResult
 - Models/UpdateJobModels.cs — UpdateJobResult, UpdateProgress
 
 ## Key Files — Tray App (CbitAgent.Tray/)
@@ -84,6 +87,18 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 - Publish tray: dotnet publish CbitAgent.Tray/CbitAgent.Tray.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./publish-tray
 - Build MSI: dotnet build CbitAgent.Installer/CbitAgent.Installer.wixproj -c Release
 - Output: CbitAgent.Installer/bin/Release/CbitAgent.Installer.msi
+
+## Scripting Engine
+- Server delivers PowerShell scripts via `pending_script` in heartbeat response
+- One script at a time (`_scriptInProgress` guard), queued scripts re-sent next heartbeat
+- Variable injection: replaces `{{Key}}` in script content before execution
+- Files downloaded to temp working directory (`axis-script-{executionId}`)
+- PowerShell: `-NoProfile -NonInteractive -ExecutionPolicy Bypass -File`
+- Timeout: `Kill(entireProcessTree: true)` after `timeout_seconds`
+- Output capped at 256KB during capture
+- Results reported to `POST /api/agent/scripts/{execution_id}/result`
+- Status: success (exit 0), failed (non-zero), timeout, error (agent-level failure)
+- Spec: `C:\dev\axis-scripting-windows.md`
 
 ## Known Issues
 - No MSI auto-update yet (agent_updater logic exists but untested)

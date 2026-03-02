@@ -12,6 +12,9 @@ public class CheckInResponse
 
     [JsonPropertyName("check_in_interval_minutes")]
     public int CheckInIntervalMinutes { get; set; } = 5;
+
+    [JsonPropertyName("pending_script")]
+    public PendingScript? PendingScript { get; set; }
 }
 
 public class AgentCommand

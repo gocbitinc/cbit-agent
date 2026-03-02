@@ -133,6 +133,23 @@ public class ApiClient
         return result.ValueKind != JsonValueKind.Undefined;
     }
 
+    public async Task<bool> ReportScriptResultAsync(int executionId, ScriptResult result, CancellationToken ct = default)
+    {
+        SetAuthHeaders();
+        var payload = new
+        {
+            status = result.Status,
+            exit_code = result.ExitCode,
+            stdout = result.Stdout,
+            stderr = result.Stderr,
+            started_at = result.StartedAt.ToString("o"),
+            completed_at = result.CompletedAt.ToString("o")
+        };
+        var response = await PostWithRetryAsync<System.Text.Json.JsonElement>(
+            $"{BaseUrl}/scripts/{executionId}/result", payload, useAuth: true, ct);
+        return response.ValueKind != System.Text.Json.JsonValueKind.Undefined;
+    }
+
     public async Task<bool> DownloadFileAsync(string relativeUrl, string destinationPath, CancellationToken ct = default)
     {
         var url = _configManager.Config.ServerUrl.TrimEnd('/') + relativeUrl;

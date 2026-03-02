@@ -508,10 +508,10 @@ public class WindowsUpdateExecutor
             int matchCount = (int)updatesToInstall.Count;
             if (matchCount == 0)
             {
-                result.Status = "success";
+                result.Status = "up_to_date";
                 result.RebootRequired = CheckRebootRequired();
-                _logger.LogInformation("No updates matched the policy criteria");
-                ReportProgress(onProgress, "success", null, 100);
+                _logger.LogInformation("No updates matched the policy criteria — system is up to date");
+                ReportProgress(onProgress, "up_to_date", null, 100);
                 return result;
             }
 

@@ -12,6 +12,9 @@ public class InstalledPatch
 
     [JsonPropertyName("installed_on")]
     public DateTime? InstalledOn { get; set; }
+
+    [JsonPropertyName("category")]
+    public string? Category { get; set; }
 }
 
 public class PendingPatch

@@ -18,8 +18,10 @@ public class Worker : BackgroundService
     private readonly AgentUpdater _agentUpdater;
     private readonly WebSocketTerminalClient _wsTerminalClient;
     private readonly WindowsUpdateExecutor _windowsUpdateExecutor;
+    private readonly ScriptExecutor _scriptExecutor;
 
     private int _checkInCount;
+    private bool _scriptInProgress;
     private const int AppsReportInterval = 12;   // Every 12th check-in (~1 hour at 5 min intervals)
     private const int PatchReportInterval = 12;   // Every 12th check-in
 
@@ -35,7 +37,8 @@ public class Worker : BackgroundService
         ScreenConnectDetector screenConnectDetector,
         AgentUpdater agentUpdater,
         WebSocketTerminalClient wsTerminalClient,
-        WindowsUpdateExecutor windowsUpdateExecutor)
+        WindowsUpdateExecutor windowsUpdateExecutor,
+        ScriptExecutor scriptExecutor)
     {
         _logger = logger;
         _configManager = configManager;
@@ -49,6 +52,7 @@ public class Worker : BackgroundService
         _agentUpdater = agentUpdater;
         _wsTerminalClient = wsTerminalClient;
         _windowsUpdateExecutor = windowsUpdateExecutor;
+        _scriptExecutor = scriptExecutor;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -201,6 +205,35 @@ public class Worker : BackgroundService
 
         // Process commands
         await ProcessCommandsAsync(response.Commands, ct);
+
+        // Handle pending script execution
+        if (response.PendingScript != null && !_scriptInProgress)
+        {
+            _logger.LogInformation("Received pending script execution {ExecutionId}",
+                response.PendingScript.ExecutionId);
+            _scriptInProgress = true;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await _scriptExecutor.ExecuteAsync(response.PendingScript);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Script execution {ExecutionId} threw unhandled exception",
+                        response.PendingScript.ExecutionId);
+                }
+                finally
+                {
+                    _scriptInProgress = false;
+                }
+            });
+        }
+        else if (response.PendingScript != null && _scriptInProgress)
+        {
+            _logger.LogInformation("Script already in progress, skipping pending script {ExecutionId}",
+                response.PendingScript.ExecutionId);
+        }
 
         // Periodic reports
         if (_checkInCount % AppsReportInterval == 0 || _checkInCount == 1)

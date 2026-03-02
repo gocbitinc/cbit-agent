@@ -35,6 +35,7 @@ builder.Services.AddSingleton<ScreenConnectDetector>();
 builder.Services.AddSingleton<AgentUpdater>();
 builder.Services.AddSingleton<WindowsUpdateExecutor>();
 builder.Services.AddSingleton<WebSocketTerminalClient>();
+builder.Services.AddSingleton<ScriptExecutor>();
 
 // Register the worker
 builder.Services.AddHostedService<Worker>();
