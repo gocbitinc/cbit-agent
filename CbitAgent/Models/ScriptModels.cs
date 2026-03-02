@@ -5,7 +5,7 @@ namespace CbitAgent.Models;
 public class PendingScript
 {
     [JsonPropertyName("execution_id")]
-    public int ExecutionId { get; set; }
+    public string ExecutionId { get; set; } = string.Empty;
 
     [JsonPropertyName("script_content")]
     public string ScriptContent { get; set; } = string.Empty;

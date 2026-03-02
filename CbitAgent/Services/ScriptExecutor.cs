@@ -180,7 +180,7 @@ public class ScriptExecutor
         await response.Content.CopyToAsync(fileStream);
     }
 
-    private async Task ReportResultAsync(int executionId, ScriptResult result)
+    private async Task ReportResultAsync(string executionId, ScriptResult result)
     {
         try
         {

@@ -133,7 +133,7 @@ public class ApiClient
         return result.ValueKind != JsonValueKind.Undefined;
     }
 
-    public async Task<bool> ReportScriptResultAsync(int executionId, ScriptResult result, CancellationToken ct = default)
+    public async Task<bool> ReportScriptResultAsync(string executionId, ScriptResult result, CancellationToken ct = default)
     {
         SetAuthHeaders();
         var payload = new
