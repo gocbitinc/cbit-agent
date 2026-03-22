@@ -14,15 +14,28 @@
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="CBITFOLDER" Name="CBIT">
-        <Directory Id="INSTALLFOLDER" Name="Agent" />
+        <Directory Id="INSTALLFOLDER" Name="Agent">
+          <Directory Id="LOGSFOLDER" Name="logs" />
+        </Directory>
       </Directory>
     </StandardDirectory>
 
     <Feature Id="MainFeature" Title="CBIT RMM Agent" Level="1">
       <ComponentRef Id="CbitAgentExe" />
       <ComponentRef Id="CbitTrayExe" />
+      <ComponentRef Id="LogsFolder" />
       <ComponentRef Id="CleanupOnUninstall" />
     </Feature>
+
+    <!-- Grant SeSecurityPrivilege to LocalSystem (S-1-5-18) so the agent can read the Security event log.
+         Script installed alongside agent; runs via deferred custom action as elevated SYSTEM.
+         Return="ignore" so install succeeds even if this fails (agent has graceful fallback). -->
+    <CustomAction Id="GrantSecurityPrivilege"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]grant-secpriv.ps1&quot;"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
 
     <!-- Launch tray app as the logged-in user after install/upgrade -->
     <CustomAction Id="LaunchTray"
@@ -62,7 +75,8 @@
       <Custom Action="KillTrayProcess" Before="KillAgentProcess" Condition="REMOVE" />
       <Custom Action="KillAgentProcess" Before="DeleteAgentService" Condition="REMOVE" />
       <Custom Action="DeleteAgentService" Before="InstallValidate" Condition="REMOVE" />
-      <!-- On install/upgrade: launch tray app after everything is in place -->
+      <!-- On install/upgrade: grant Security log privilege, then launch tray app -->
+      <Custom Action="GrantSecurityPrivilege" Before="InstallFinalize" Condition="NOT REMOVE" />
       <Custom Action="LaunchTray" After="InstallFinalize" Condition="NOT REMOVE" />
     </InstallExecuteSequence>
 

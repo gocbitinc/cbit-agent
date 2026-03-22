@@ -150,6 +150,24 @@ public class ApiClient
         return response.ValueKind != System.Text.Json.JsonValueKind.Undefined;
     }
 
+    public async Task PostAlertsAsync(List<object> alerts, CancellationToken ct = default)
+    {
+        try
+        {
+            SetAuthHeaders();
+            var json = JsonSerializer.Serialize(alerts, JsonOptions);
+            var content = new StringContent(json, Encoding.UTF8, "application/json");
+            _logger.LogDebug("POST {Url}/alerts ({Count} alerts)", BaseUrl, alerts.Count);
+            using var response = await _httpClient.PostAsync($"{BaseUrl}/alerts", content, ct);
+            response.EnsureSuccessStatusCode();
+            _logger.LogInformation("Posted {Count} alerts successfully", alerts.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to post {Count} alerts", alerts.Count);
+        }
+    }
+
     public async Task<bool> DownloadFileAsync(string relativeUrl, string destinationPath, CancellationToken ct = default)
     {
         var url = _configManager.Config.ServerUrl.TrimEnd('/') + relativeUrl;

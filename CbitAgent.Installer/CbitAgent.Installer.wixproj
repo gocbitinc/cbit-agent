@@ -3,12 +3,12 @@
   <PropertyGroup>
     <OutputType>Package</OutputType>
     <InstallerPlatform>x64</InstallerPlatform>
-    <PublishDir>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\publish'))</PublishDir>
-    <PublishTrayDir>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\publish-tray'))</PublishTrayDir>
+    <AgentPublishDir>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\publish'))</AgentPublishDir>
+    <TrayPublishDir>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\publish-tray'))</TrayPublishDir>
   </PropertyGroup>
 
   <PropertyGroup>
-    <DefineConstants>PublishDir=$(PublishDir);PublishTrayDir=$(PublishTrayDir)</DefineConstants>
+    <DefineConstants>PublishDir=$(AgentPublishDir);PublishTrayDir=$(TrayPublishDir)</DefineConstants>
   </PropertyGroup>
 
 </Project>

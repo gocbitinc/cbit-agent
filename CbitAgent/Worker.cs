@@ -19,6 +19,7 @@ public class Worker : BackgroundService
     private readonly WebSocketTerminalClient _wsTerminalClient;
     private readonly WindowsUpdateExecutor _windowsUpdateExecutor;
     private readonly ScriptExecutor _scriptExecutor;
+    private readonly ServiceMonitor _serviceMonitor;
 
     private int _checkInCount;
     private bool _scriptInProgress;
@@ -38,7 +39,8 @@ public class Worker : BackgroundService
         AgentUpdater agentUpdater,
         WebSocketTerminalClient wsTerminalClient,
         WindowsUpdateExecutor windowsUpdateExecutor,
-        ScriptExecutor scriptExecutor)
+        ScriptExecutor scriptExecutor,
+        ServiceMonitor serviceMonitor)
     {
         _logger = logger;
         _configManager = configManager;
@@ -53,6 +55,7 @@ public class Worker : BackgroundService
         _wsTerminalClient = wsTerminalClient;
         _windowsUpdateExecutor = windowsUpdateExecutor;
         _scriptExecutor = scriptExecutor;
+        _serviceMonitor = serviceMonitor;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -244,6 +247,30 @@ public class Worker : BackgroundService
         if (_checkInCount % PatchReportInterval == 0 || _checkInCount == 1)
         {
             await ReportPatchesAsync(ct);
+        }
+
+        // Service and event log monitoring
+        try
+        {
+            var installDir = AppContext.BaseDirectory;
+            var assetId = config.AgentId!;
+            var serviceAlerts = _serviceMonitor.CheckServices(installDir, assetId);
+            var eventAlerts = _serviceMonitor.CheckEvents(installDir, assetId);
+
+            var allAlerts = new List<object>();
+            allAlerts.AddRange(serviceAlerts);
+            allAlerts.AddRange(eventAlerts);
+
+            if (allAlerts.Count > 0)
+            {
+                _logger.LogInformation("Posting {Count} monitoring alerts ({Services} service, {Events} event)",
+                    allAlerts.Count, serviceAlerts.Count, eventAlerts.Count);
+                await _apiClient.PostAlertsAsync(allAlerts, ct);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Service/event monitoring failed, continuing normal operation");
         }
     }
 

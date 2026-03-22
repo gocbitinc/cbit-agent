@@ -24,6 +24,9 @@
                       Stop="both"
                       Remove="uninstall"
                       Wait="yes" />
+
+      <File Id="GrantSecPrivScript"
+            Source="grant-secpriv.ps1" />
     </Component>
   </Fragment>
 
@@ -43,6 +46,22 @@
     </Component>
   </Fragment>
 
+  <!-- Create logs directory at install time -->
+  <Fragment>
+    <Component Id="LogsFolder" Directory="LOGSFOLDER"
+               Guid="D4E5F6A7-B8C9-0123-DEFA-234567890123" Bitness="always64">
+
+      <CreateFolder />
+
+      <RegistryValue Root="HKLM"
+                     Key="SOFTWARE\CBIT\Agent"
+                     Name="LogsCreated"
+                     Type="integer"
+                     Value="1"
+                     KeyPath="yes" />
+    </Component>
+  </Fragment>
+
   <!-- Cleanup: remove config.json and any other non-MSI files, then the folders -->
   <Fragment>
     <Component Id="CleanupOnUninstall" Directory="INSTALLFOLDER"
@@ -56,6 +75,8 @@
                      KeyPath="yes" />
 
       <RemoveFile Id="CleanupAllFiles" Directory="INSTALLFOLDER" Name="*" On="uninstall" />
+      <RemoveFile Id="CleanupLogFiles" Directory="LOGSFOLDER" Name="*" On="uninstall" />
+      <RemoveFolder Id="CleanupLogsFolder" Directory="LOGSFOLDER" On="uninstall" />
       <RemoveFolder Id="CleanupInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
       <RemoveFolder Id="CleanupCbitFolder" Directory="CBITFOLDER" On="uninstall" />
     </Component>

@@ -4,41 +4,68 @@ using CbitAgent.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Serilog;
+using Serilog.Events;
 
-var builder = Host.CreateApplicationBuilder(args);
+// Set up Serilog with file + console + event log sinks at different levels
+var logDir = Path.Combine(AppContext.BaseDirectory, "logs");
+Directory.CreateDirectory(logDir);
 
-// Configure as Windows Service
-builder.Services.AddWindowsService(options =>
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .WriteTo.File(
+        path: Path.Combine(logDir, "agent.log"),
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 7,
+        fileSizeLimitBytes: 10 * 1024 * 1024,
+        rollOnFileSizeLimit: true,
+        outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}")
+    .WriteTo.Console(restrictedToMinimumLevel: LogEventLevel.Warning,
+        outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}")
+    .WriteTo.EventLog("CBIT RMM Agent", manageEventSource: false,
+        restrictedToMinimumLevel: LogEventLevel.Error)
+    .CreateLogger();
+
+try
 {
-    options.ServiceName = "CBIT RMM Agent";
-});
+    var builder = Host.CreateApplicationBuilder(args);
 
-// Configure logging
-builder.Logging.ClearProviders();
-builder.Logging.AddConsole();
-builder.Logging.AddEventLog(settings =>
+    // Configure as Windows Service
+    builder.Services.AddWindowsService(options =>
+    {
+        options.ServiceName = "CBIT RMM Agent";
+    });
+
+    // Replace default logging with Serilog
+    builder.Logging.ClearProviders();
+    builder.Services.AddSerilog();
+
+    // Register services
+    builder.Services.AddSingleton<ConfigManager>();
+    builder.Services.AddSingleton<ApiClient>();
+    builder.Services.AddSingleton<SystemInfoCollector>();
+    builder.Services.AddSingleton<NetworkInfoCollector>();
+    builder.Services.AddSingleton<DiskInfoCollector>();
+    builder.Services.AddSingleton<InstalledAppsCollector>();
+    builder.Services.AddSingleton<PatchInfoCollector>();
+    builder.Services.AddSingleton<ScreenConnectDetector>();
+    builder.Services.AddSingleton<AgentUpdater>();
+    builder.Services.AddSingleton<WindowsUpdateExecutor>();
+    builder.Services.AddSingleton<WebSocketTerminalClient>();
+    builder.Services.AddSingleton<ScriptExecutor>();
+    builder.Services.AddSingleton<ServiceMonitor>();
+
+    // Register the worker
+    builder.Services.AddHostedService<Worker>();
+
+    var host = builder.Build();
+    host.Run();
+}
+catch (Exception ex)
 {
-    settings.SourceName = "CBIT RMM Agent";
-    settings.LogName = "Application";
-});
-builder.Logging.SetMinimumLevel(LogLevel.Information);
-
-// Register services
-builder.Services.AddSingleton<ConfigManager>();
-builder.Services.AddSingleton<ApiClient>();
-builder.Services.AddSingleton<SystemInfoCollector>();
-builder.Services.AddSingleton<NetworkInfoCollector>();
-builder.Services.AddSingleton<DiskInfoCollector>();
-builder.Services.AddSingleton<InstalledAppsCollector>();
-builder.Services.AddSingleton<PatchInfoCollector>();
-builder.Services.AddSingleton<ScreenConnectDetector>();
-builder.Services.AddSingleton<AgentUpdater>();
-builder.Services.AddSingleton<WindowsUpdateExecutor>();
-builder.Services.AddSingleton<WebSocketTerminalClient>();
-builder.Services.AddSingleton<ScriptExecutor>();
-
-// Register the worker
-builder.Services.AddHostedService<Worker>();
-
-var host = builder.Build();
-host.Run();
+    Log.Fatal(ex, "CBIT RMM Agent terminated unexpectedly");
+}
+finally
+{
+    Log.CloseAndFlush();
+}
