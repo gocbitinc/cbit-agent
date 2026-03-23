@@ -10,7 +10,7 @@
 
     <MajorUpgrade DowngradeErrorMessage="A newer version of CBIT RMM Agent is already installed." />
     <Launch Condition="NOT Installed OR REMOVE" Message="CBIT RMM Agent is already installed. Uninstall the current version first, or install a newer version." />
-    <MediaTemplate EmbedCab="yes" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="CBITFOLDER" Name="CBIT">
@@ -20,9 +20,15 @@
       </Directory>
     </StandardDirectory>
 
+    <!-- Customer key property — server patches this value in the MSI Property table
+         before download using Windows Installer COM API (no binary scanning needed).
+         Default "CBIT_YOURKEY" is the placeholder; agent ignores it at startup. -->
+    <Property Id="CUSTOMER_KEY" Value="CBIT_YOURKEY" Secure="yes" />
+
     <Feature Id="MainFeature" Title="CBIT RMM Agent" Level="1">
       <ComponentRef Id="CbitAgentExe" />
       <ComponentRef Id="CbitTrayExe" />
+      <ComponentRef Id="CustomerKeyReg" />
       <ComponentRef Id="LogsFolder" />
       <ComponentRef Id="CleanupOnUninstall" />
     </Feature>

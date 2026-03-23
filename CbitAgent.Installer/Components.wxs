@@ -46,6 +46,22 @@
     </Component>
   </Fragment>
 
+  <!-- Write customer key from MSI property to registry — agent reads this at startup
+       if config.json doesn't have a customer_key yet. Server patches the CUSTOMER_KEY
+       Property in the MSI database before download. -->
+  <Fragment>
+    <Component Id="CustomerKeyReg" Directory="INSTALLFOLDER"
+               Guid="E5F6A7B8-C9D0-1234-EFAB-345678901234" Bitness="always64">
+
+      <RegistryValue Root="HKLM"
+                     Key="SOFTWARE\CBIT\Agent"
+                     Name="CustomerKey"
+                     Type="string"
+                     Value="[CUSTOMER_KEY]"
+                     KeyPath="yes" />
+    </Component>
+  </Fragment>
+
   <!-- Create logs directory at install time -->
   <Fragment>
     <Component Id="LogsFolder" Directory="LOGSFOLDER"

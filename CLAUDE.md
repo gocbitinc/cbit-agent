@@ -76,14 +76,25 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 - reboot → reboot_status (rebooting) — executes shutdown /r /t 10 /f
 - ping/pong — keepalive
 
+## Customer Key Delivery (MSI Property Table)
+- Server patches `CUSTOMER_KEY` in MSI Property table before download (Windows Installer COM API or msitools on Linux)
+- MSI writes `[CUSTOMER_KEY]` to registry: `HKLM\SOFTWARE\CBIT\Agent\CustomerKey`
+- Agent reads config.json → if no customer_key, reads registry → saves to config.json
+- Placeholder value `CBIT_YOURKEY` is ignored (treated as empty)
+- No binary patching — Property table is always uncompressed OLE structured storage
+- Server-side patching: `UPDATE Property SET Value='real-key' WHERE Property='CUSTOMER_KEY'`
+- Install with key: `msiexec /i CbitAgent.Installer.msi CUSTOMER_KEY=<key>`
+
 ## MSI Behavior
 - Installs to C:\Program Files\CBIT\Agent\
 - Registers and starts CbitRmmAgent Windows Service (auto-start, LocalSystem)
 - Adds HKLM Run key for CbitAgent.Tray.exe (auto-start for all users)
+- Writes CUSTOMER_KEY property to registry (HKLM\SOFTWARE\CBIT\Agent\CustomerKey)
 - Post-install custom action launches CbitAgent.Tray.exe as logged-in user (no reboot needed)
 - On uninstall: early custom actions (before InstallValidate) force-kill CbitAgent.Tray.exe and CbitAgent.exe via taskkill, stop/delete service via sc.exe — prevents "files in use" prompt and hanging
 - Creates `logs\` subdirectory at install time for agent log files
 - Cleanup removes all files including config.json, logs, Agent and CBIT directories
+- Compression: high (embedded cab), MSI ~75 MB
 
 ## Build Commands
 - Debug build: dotnet build
@@ -108,7 +119,7 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 - ServiceMonitor checks Windows services and event logs every check-in cycle
 - Config: `service-monitor.ini` in agent install directory (re-read each cycle, no restart needed)
 - Services: auto-restart via sc.exe (bypasses ServiceController permission issues), 120s delay before alert, recovery alerts
-- Events: queries event logs via EventLogSession for privileged log access (Security, etc.)
+- Events: queries event logs via EventLogQuery/EventLogReader (no EventLogSession — that caused RPC errors)
 - Security event log: MSI grants SeSecurityPrivilege to LocalSystem via secedit custom action
 - Graceful fallback: UnauthorizedAccessException on event logs logged as warning, never crashes
 - Alerts posted to `POST /api/agent/alerts` as JSON array

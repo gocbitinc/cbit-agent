@@ -17,6 +17,9 @@ public class ServiceMonitor
     // Track last check time per event log for dedup
     private readonly Dictionary<string, DateTime> _lastEventCheck = new();
 
+    // Track which event logs have already logged an access-denied warning this session
+    private readonly HashSet<string> _accessDeniedLogged = new();
+
     private const int RestartWaitSeconds = 10;
     private const int TicketDelaySeconds = 120;
 
@@ -158,11 +161,14 @@ public class ServiceMonitor
             }
             catch (UnauthorizedAccessException)
             {
-                _logger.LogWarning(
-                    "Access denied reading {LogName} event log for EventID {EventId}. " +
-                    "Security event log requires SeSecurityPrivilege. " +
-                    "Grant this privilege to the CbitRmmAgent service or run as Administrator.",
-                    entry.LogName, entry.EventId);
+                var logKey = $"{entry.LogName}:{entry.EventId}";
+                if (_accessDeniedLogged.Add(logKey))
+                {
+                    _logger.LogWarning(
+                        "Cannot read {LogName} event log — SeSecurityPrivilege required. " +
+                        "Add privilege via Group Policy or grant to CbitRmmAgent service.",
+                        entry.LogName);
+                }
             }
             catch (Exception ex)
             {
@@ -181,18 +187,9 @@ public class ServiceMonitor
         if (!_lastEventCheck.TryGetValue(key, out var lastCheck))
             lastCheck = DateTime.UtcNow.AddMinutes(-5); // Default: 5 minutes ago on first run
 
-        var queryString = $"*[System[EventID={entry.EventId} and TimeCreated[@SystemTime>='{lastCheck:o}']]]";
-        var query = new EventLogQuery(entry.LogName, PathType.LogName, queryString)
-        {
-            // Use explicit EventLogSession to access privileged logs (e.g. Security)
-            // under the full LocalSystem token rather than the default reader context
-            Session = new EventLogSession(
-                ".",
-                null,
-                null,
-                null,
-                SessionAuthentication.Default)
-        };
+        var since = lastCheck.ToString("yyyy-MM-ddTHH:mm:ss");
+        var queryString = $"*[System[EventID={entry.EventId} and TimeCreated[@SystemTime>='{since}']]]";
+        var query = new EventLogQuery(entry.LogName, PathType.LogName, queryString);
 
         using var reader = new EventLogReader(query);
         EventRecord? record;

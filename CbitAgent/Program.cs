@@ -13,12 +13,13 @@ Directory.CreateDirectory(logDir);
 
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Information()
+    .Enrich.FromLogContext()
     .WriteTo.File(
         path: Path.Combine(logDir, "agent.log"),
         rollingInterval: RollingInterval.Day,
         retainedFileCountLimit: 7,
-        fileSizeLimitBytes: 10 * 1024 * 1024,
-        rollOnFileSizeLimit: true,
+        fileSizeLimitBytes: 10_000_000,
+        flushToDiskInterval: TimeSpan.FromSeconds(1),
         outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}")
     .WriteTo.Console(restrictedToMinimumLevel: LogEventLevel.Warning,
         outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}")
