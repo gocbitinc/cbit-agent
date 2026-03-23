@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using CbitAgent.Configuration;
 using CbitAgent.Models;
@@ -11,6 +12,9 @@ public class ScriptExecutor
     private readonly ApiClient _apiClient;
     private readonly ConfigManager _configManager;
     private readonly ILogger<ScriptExecutor> _logger;
+    private static readonly HttpClient SharedHttpClient = new() { Timeout = TimeSpan.FromMinutes(5) };
+
+    private const int MaxTimeoutSeconds = 3600; // 1 hour max
 
     public ScriptExecutor(ApiClient apiClient, ConfigManager configManager, ILogger<ScriptExecutor> logger)
     {
@@ -22,6 +26,47 @@ public class ScriptExecutor
     public async Task ExecuteAsync(PendingScript script)
     {
         var executionId = script.ExecutionId;
+
+        // Validate execution_id — prevent path traversal
+        if (string.IsNullOrEmpty(executionId) ||
+            executionId.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
+            executionId.Contains(".."))
+        {
+            _logger.LogError("Invalid execution_id format: rejected for path safety");
+            return;
+        }
+
+        // Verify HMAC-SHA256 signature before any execution
+        var signingSecret = _configManager.Config.ScriptSigningSecret;
+        if (!VerifyScriptSignature(script.ScriptContent, script.ScriptSignature, signingSecret))
+        {
+            _logger.LogError("Script execution {ExecutionId}: signature verification failed, aborting", executionId);
+            await ReportResultAsync(executionId, new ScriptResult
+            {
+                Status = "error", ExitCode = -1, Stdout = "",
+                Stderr = "Script signature verification failed",
+                StartedAt = DateTime.UtcNow, CompletedAt = DateTime.UtcNow
+            });
+            return;
+        }
+
+        // Validate script content is not empty
+        if (string.IsNullOrWhiteSpace(script.ScriptContent))
+        {
+            _logger.LogError("Script execution {ExecutionId}: empty script content, aborting", executionId);
+            await ReportResultAsync(executionId, new ScriptResult
+            {
+                Status = "error", ExitCode = -1, Stdout = "",
+                Stderr = "Empty script content",
+                StartedAt = DateTime.UtcNow, CompletedAt = DateTime.UtcNow
+            });
+            return;
+        }
+
+        // Cap timeout to prevent abuse (max 1 hour)
+        var timeoutSeconds = Math.Min(script.TimeoutSeconds, MaxTimeoutSeconds);
+        if (timeoutSeconds <= 0) timeoutSeconds = 300; // default 5 minutes
+
         var workDir = Path.Combine(Path.GetTempPath(), $"axis-script-{executionId}");
 
         _logger.LogInformation("Starting script execution {ExecutionId} in {WorkDir}", executionId, workDir);
@@ -59,8 +104,8 @@ public class ScriptExecutor
             // Execute PowerShell
             var startedAt = DateTime.UtcNow;
             _logger.LogInformation("Executing PowerShell script for execution {ExecutionId} (timeout: {Timeout}s)",
-                executionId, script.TimeoutSeconds);
-            var result = await RunPowerShellAsync(scriptPath, script.TimeoutSeconds, workDir);
+                executionId, timeoutSeconds);
+            var result = await RunPowerShellAsync(scriptPath, timeoutSeconds, workDir);
             var completedAt = DateTime.UtcNow;
 
             var status = result.TimedOut ? "timeout" :
@@ -166,15 +211,11 @@ public class ScriptExecutor
     private async Task DownloadFileAsync(string url, string destinationPath)
     {
         var config = _configManager.Config;
-        using var handler = new HttpClientHandler
-        {
-            ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true
-        };
-        using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(5) };
-        client.DefaultRequestHeaders.Authorization =
+        var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Authorization =
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.AgentToken);
 
-        using var response = await client.GetAsync(url);
+        using var response = await SharedHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
         response.EnsureSuccessStatusCode();
         await using var fileStream = File.Create(destinationPath);
         await response.Content.CopyToAsync(fileStream);
@@ -199,5 +240,34 @@ public class ScriptExecutor
         if (string.IsNullOrEmpty(value) || value.Length <= maxLength)
             return value;
         return value[..maxLength] + "\n\n--- OUTPUT TRUNCATED AT 256KB ---";
+    }
+
+    private bool VerifyScriptSignature(string scriptContent, string? signature, string? secret)
+    {
+        if (string.IsNullOrEmpty(secret))
+        {
+            _logger.LogError("Script rejected: no signing secret configured — re-register agent");
+            return false;
+        }
+
+        if (string.IsNullOrEmpty(signature))
+        {
+            _logger.LogError("Script rejected: no signature provided in payload");
+            return false;
+        }
+
+        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
+        var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(scriptContent));
+        var computed = Convert.ToHexString(hash).ToLowerInvariant();
+
+        if (!CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(computed),
+            Encoding.UTF8.GetBytes(signature)))
+        {
+            _logger.LogError("Script rejected: HMAC signature verification failed — possible tampering");
+            return false;
+        }
+
+        return true;
     }
 }

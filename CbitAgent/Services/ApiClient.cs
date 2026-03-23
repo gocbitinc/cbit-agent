@@ -25,12 +25,7 @@ public class ApiClient
         _configManager = configManager;
         _logger = logger;
 
-        var handler = new HttpClientHandler
-        {
-            ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true
-        };
-
-        _httpClient = new HttpClient(handler)
+        _httpClient = new HttpClient()
         {
             Timeout = TimeSpan.FromSeconds(30)
         };

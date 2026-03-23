@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
 
   <Fragment>
     <Component Id="CbitAgentExe" Directory="INSTALLFOLDER"
@@ -24,6 +25,14 @@
                       Stop="both"
                       Remove="uninstall"
                       Wait="yes" />
+
+      <util:ServiceConfig
+          ServiceName="CbitRmmAgent"
+          FirstFailureActionType="restart"
+          SecondFailureActionType="restart"
+          ThirdFailureActionType="restart"
+          RestartServiceDelayInSeconds="30"
+          ResetPeriodInDays="1" />
 
       <File Id="GrantSecPrivScript"
             Source="grant-secpriv.ps1" />

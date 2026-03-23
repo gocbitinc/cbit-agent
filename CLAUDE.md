@@ -5,7 +5,7 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 
 ## Current State
 - Agent registers with server, checks in every 5 minutes, reports system info, network, disks, SMART, installed apps, patches, ScreenConnect GUID
-- WebSocket terminal: echo fix applied (agent echoes input back, raw byte stream reading, cmd.exe /Q)
+- WebSocket terminal: PowerShell only (CMD removed — stdout buffering unsolvable without ConPTY), agent echoes input back, raw byte stream reading
 - WebSocket handles scan_updates, install_updates, install_kb, and reboot commands
 - Windows Update executor: scan, download, install KBs, policy-based filtering, reboot detection
 - HTTP check-in commands: install_kb (ad-hoc) and run_updates (policy-based) fully wired
@@ -21,7 +21,7 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 - config.json next to exe: server_url, customer_key, agent_id, agent_token
 - Server API base: https://axis.gocbit.com/api/agent/
 - WebSocket: wss://axis.gocbit.com/api/agent/ws
-- Auth: agent_token JWT in Authorization header for HTTP, query param for WebSocket
+- Auth: agent_token JWT in Authorization header for HTTP; WebSocket auth sends `{type: "auth", agent_token, agent_id}` in message body (no token in URL)
 
 ## Repository
 - GitHub: https://github.com/gocbitinc/cbit-agent.git
@@ -33,6 +33,7 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 - CbitAgent.Tray/ — system tray support app
 - CbitAgent.Tests/ — test harness for collectors
 - CbitAgent.Installer/ — WiX v6 MSI installer
+- CbitAgent.Bundle/ — WiX v6 Burn bootstrapper (MSI + VC++ Redistributable)
 
 ## Key Files — Agent Service (CbitAgent/)
 - Program.cs — DI setup, Windows Service config, Serilog logging (file + console + event log)
@@ -46,7 +47,7 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 - Services/ScreenConnectDetector.cs — service name parse
 - Services/AgentUpdater.cs — download, hash verify, rollback
 - Services/WebSocketTerminalClient.cs — terminal relay + WU command routing + install_kb + reboot
-- Services/TerminalSession.cs — cmd/powershell process with raw byte I/O
+- Services/TerminalSession.cs — PowerShell process with raw byte I/O (CMD removed)
 - Services/WindowsUpdateExecutor.cs — WUApiLib COM: scan, install, policy filter, reboot check
 - Models/TerminalMessages.cs — WsMessage/WsOutMessage (terminal + WU fields)
 - Services/ScriptExecutor.cs — PowerShell script execution: file download, variable injection, process spawn, timeout, result reporting
@@ -65,8 +66,13 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 
 ## Key Files — Installer (CbitAgent.Installer/)
 - Package.wxs — MSI package definition, directory structure, feature, custom actions (launch tray post-install, kill processes pre-uninstall)
-- Components.wxs — agent exe + service, tray exe + Run key, cleanup on uninstall
+- Components.wxs — agent exe + service, tray exe + Run key, customer key registry, cleanup on uninstall
 - CbitAgent.Installer.wixproj — WiX v6 SDK, AgentPublishDir + TrayPublishDir properties (avoid MSBuild reserved name PublishDir)
+- vc_redist.x64.exe — VC++ 2015-2022 x64 Redistributable (downloaded, not in git)
+
+## Key Files — Bundle (CbitAgent.Bundle/)
+- Bundle.wxs — Burn bootstrapper: chains VC++ Redistributable + agent MSI, silent install, CUSTOMER_KEY passthrough
+- CbitAgent.Bundle.wixproj — WiX v6 Bundle SDK with Bal + Util extensions
 
 ## WebSocket Message Types
 - terminal_start/stop/input/resize, terminal_output/started/error — remote terminal
@@ -94,18 +100,28 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 - On uninstall: early custom actions (before InstallValidate) force-kill CbitAgent.Tray.exe and CbitAgent.exe via taskkill, stop/delete service via sc.exe — prevents "files in use" prompt and hanging
 - Creates `logs\` subdirectory at install time for agent log files
 - Cleanup removes all files including config.json, logs, Agent and CBIT directories
-- Compression: high (embedded cab), MSI ~75 MB
+- Compression: high (embedded cab), MSI ~78 MB
+- Bundle bootstrapper (CbitAgent.Bundle.exe ~100 MB) chains VC++ Redistributable + MSI
+- Bundle detects existing VC++ via registry (HKLM\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64), skips if installed
+- Bundle accepts CUSTOMER_KEY variable and passes to MSI
+- GPO can deploy MSI directly (VC++ usually present on managed machines); bundle is for clean installs
 
 ## Build Commands
 - Debug build: dotnet build
 - Publish agent: dotnet publish CbitAgent/CbitAgent.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./publish
 - Publish tray: dotnet publish CbitAgent.Tray/CbitAgent.Tray.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./publish-tray
 - Build MSI: dotnet build CbitAgent.Installer/CbitAgent.Installer.wixproj -c Release
-- Output: CbitAgent.Installer/bin/Release/CbitAgent.Installer.msi
+- Build Bundle: dotnet build CbitAgent.Bundle/CbitAgent.Bundle.wixproj -c Release (requires MSI built first)
+- Download VC++ redist: Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile "CbitAgent.Installer\vc_redist.x64.exe"
+- Output MSI: CbitAgent.Installer/bin/Release/CbitAgent.Installer.msi
+- Output Bundle: CbitAgent.Bundle/bin/Release/CbitAgent.Bundle.exe
+- Install MSI: msiexec /i CbitAgent.Installer.msi CUSTOMER_KEY=<key>
+- Install Bundle: CbitAgent.Bundle.exe /quiet /norestart CUSTOMER_KEY=<key>
 
 ## Scripting Engine
 - Server delivers PowerShell scripts via `pending_script` in heartbeat response
 - One script at a time (`_scriptInProgress` guard), queued scripts re-sent next heartbeat
+- **HMAC-SHA256 signature verification**: every script must include `script_signature` (lowercase hex HMAC-SHA256 of raw `script_content`). Agent verifies using `script_signing_secret` from config.json (delivered at registration, refreshed every check-in). Uses `CryptographicOperations.FixedTimeEquals` (timing-attack safe). Rejects ALL scripts if secret missing, signature missing, or mismatch.
 - Variable injection: replaces `{{Key}}` in script content before execution
 - Files downloaded to temp working directory (`axis-script-{executionId}`)
 - PowerShell: `-NoProfile -NonInteractive -ExecutionPolicy Bypass -File`
@@ -136,7 +152,26 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 - Format: `2026-03-21 14:23:01 [INF] CbitAgent.Worker: Check-in successful`
 - NuGet: Serilog.Extensions.Hosting, Serilog.Sinks.File, Serilog.Sinks.Console, Serilog.Sinks.EventLog
 
+## Security Hardening (2026-03-22)
+- TLS: Strict certificate validation, no bypass path in code. For local dev with self-signed certs, add the cert to the Windows trusted root certificate store.
+- config.json ACL: Restricted to SYSTEM + Administrators on every write and on startup (disables inheritance).
+- Registry ACL: `HKLM\SOFTWARE\CBIT\Agent` restricted to SYSTEM + Administrators on startup.
+- Update integrity: SHA256 file hash is mandatory for all agent updates (rejects if server omits hash).
+- WebSocket auth: Token sent in message body as `{type: "auth", agent_token, agent_id}`. No token in URL query string.
+- Logging: Sensitive data (serial numbers, GUIDs, domains, usernames, full WS messages) moved to Debug level.
+- 401 re-registration: Agent clears token and re-registers when server returns 401 Unauthorized.
+
+## Production Readiness (2026-03-22)
+- Service recovery: Windows service auto-restarts on failure (30s delay, 3 retries, 1-day reset)
+- Startup: logs agent version, OS, .NET runtime; validates server_url is HTTPS; registration retries with backoff
+- Unhandled exceptions: `AppDomain.UnhandledException` writes to `logs/fatal.log`; `TaskScheduler.UnobservedTaskException` logged and observed
+- HttpClient: shared static instances in ScriptExecutor and NetworkInfoCollector (prevents socket exhaustion)
+- Input validation: script timeout capped at 3600s, execution_id path traversal blocked, service names validated
+- Log directory: ACL restricted to SYSTEM + Administrators Full Control with ContainerInherit + ObjectInherit (child log files inherit). ACL failure logs to `fatal.log` instead of silently swallowing.
+- Check-in overlap guard: skips cycle if previous check-in is still running
+
 ## Known Issues
+- WebSocket server must accept auth-by-message: `{type: "auth", agent_token, agent_id}` — agent no longer sends token in URL
 - No MSI auto-update yet (agent_updater logic exists but untested)
 - Support request endpoint /api/agent/support-request needs server-side implementation
 

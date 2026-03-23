@@ -18,6 +18,9 @@ public class PendingScript
 
     [JsonPropertyName("files")]
     public List<ScriptFile>? Files { get; set; }
+
+    [JsonPropertyName("script_signature")]
+    public string? ScriptSignature { get; set; }
 }
 
 public class ScriptFile

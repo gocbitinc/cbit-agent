@@ -1,6 +1,9 @@
+using System.Net;
+using System.Security.AccessControl;
 using CbitAgent.Configuration;
 using CbitAgent.Models;
 using CbitAgent.Services;
+using Microsoft.Win32;
 
 namespace CbitAgent;
 
@@ -23,8 +26,10 @@ public class Worker : BackgroundService
 
     private int _checkInCount;
     private bool _scriptInProgress;
+    private bool _checkInRunning;
     private const int AppsReportInterval = 12;   // Every 12th check-in (~1 hour at 5 min intervals)
     private const int PatchReportInterval = 12;   // Every 12th check-in
+    private const int MaxRegistrationRetries = 10;
 
     public Worker(
         ILogger<Worker> logger,
@@ -60,11 +65,25 @@ public class Worker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("CBIT RMM Agent starting...");
+        _logger.LogInformation("CBIT RMM Agent v{Version} starting on {OS} (.NET {Runtime})",
+            GetCurrentVersion(),
+            Environment.OSVersion.VersionString,
+            Environment.Version.ToString());
+
+        // Harden registry key ACL on startup
+        RestrictRegistryKeyAcl();
 
         // Load configuration
         _configManager.Load();
         var config = _configManager.Config;
+
+        // Validate server_url is HTTPS
+        if (!config.ServerUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogError("server_url must use HTTPS. Refusing to connect over insecure HTTP: {Url}",
+                config.ServerUrl);
+            return;
+        }
 
         if (string.IsNullOrEmpty(config.CustomerKey) && !config.IsRegistered)
         {
@@ -73,13 +92,26 @@ public class Worker : BackgroundService
             return;
         }
 
-        // Register if needed
+        // Register if needed — retry with backoff
         if (!config.IsRegistered)
         {
-            var registered = await RegisterAsync(stoppingToken);
+            var registered = false;
+            for (int attempt = 1; attempt <= MaxRegistrationRetries && !stoppingToken.IsCancellationRequested; attempt++)
+            {
+                registered = await RegisterAsync(stoppingToken);
+                if (registered) break;
+
+                var delaySec = Math.Min((int)Math.Pow(2, attempt), 300);
+                _logger.LogWarning("Registration attempt {Attempt}/{Max} failed, retrying in {Delay}s",
+                    attempt, MaxRegistrationRetries, delaySec);
+                try { await Task.Delay(TimeSpan.FromSeconds(delaySec), stoppingToken); }
+                catch (OperationCanceledException) { return; }
+            }
+
             if (!registered)
             {
-                _logger.LogError("Failed to register with server. Agent will retry on next start.");
+                _logger.LogError("Failed to register after {Max} attempts. Agent will retry on next start.",
+                    MaxRegistrationRetries);
                 return;
             }
         }
@@ -109,13 +141,33 @@ public class Worker : BackgroundService
     {
         while (!stoppingToken.IsCancellationRequested)
         {
+            if (_checkInRunning)
+            {
+                _logger.LogWarning("Previous check-in still running, skipping this cycle");
+                var interval2 = TimeSpan.FromMinutes(_configManager.Config.CheckInIntervalMinutes);
+                try { await Task.Delay(interval2, stoppingToken); } catch (OperationCanceledException) { break; }
+                continue;
+            }
+
+            _checkInRunning = true;
             try
             {
                 await PerformCheckInAsync(stoppingToken);
             }
+            catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                _logger.LogWarning("Agent token rejected (401) — re-registering with customer key");
+                _configManager.Config.AgentId = null;
+                _configManager.Config.AgentToken = null;
+                await RegisterAsync(stoppingToken);
+            }
             catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
             {
                 _logger.LogError(ex, "Check-in failed, will retry next interval");
+            }
+            finally
+            {
+                _checkInRunning = false;
             }
 
             var interval = TimeSpan.FromMinutes(_configManager.Config.CheckInIntervalMinutes);
@@ -152,7 +204,8 @@ public class Worker : BackgroundService
             return false;
         }
 
-        _configManager.UpdateRegistration(response.AgentId, response.AgentToken, response.CheckInIntervalMinutes);
+        _configManager.UpdateRegistration(response.AgentId, response.AgentToken,
+            response.CheckInIntervalMinutes, response.ScriptSigningSecret);
         _logger.LogInformation("Registration successful. Agent ID: {AgentId}", response.AgentId);
         return true;
     }
@@ -205,6 +258,9 @@ public class Worker : BackgroundService
             config.CheckInIntervalMinutes = response.CheckInIntervalMinutes;
             _configManager.Save();
         }
+
+        // Refresh script signing secret if server provides one
+        _configManager.UpdateScriptSigningSecret(response.ScriptSigningSecret);
 
         // Process commands
         await ProcessCommandsAsync(response.Commands, ct);
@@ -413,6 +469,34 @@ public class Worker : BackgroundService
                 startedAt, DateTime.UtcNow, "failed",
                 new List<string>(), new List<string>(),
                 ex.Message, false, ct);
+        }
+    }
+
+    /// <summary>
+    /// Restricts HKLM\SOFTWARE\CBIT\Agent to SYSTEM and Administrators only.
+    /// </summary>
+    private void RestrictRegistryKeyAcl()
+    {
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\CBIT\Agent",
+                RegistryKeyPermissionCheck.ReadWriteSubTree,
+                RegistryRights.ChangePermissions | RegistryRights.ReadKey);
+            if (key != null)
+            {
+                var security = key.GetAccessControl();
+                security.SetAccessRuleProtection(true, false);
+                security.AddAccessRule(new RegistryAccessRule(
+                    "SYSTEM", RegistryRights.FullControl, AccessControlType.Allow));
+                security.AddAccessRule(new RegistryAccessRule(
+                    "BUILTIN\\Administrators", RegistryRights.FullControl, AccessControlType.Allow));
+                key.SetAccessControl(security);
+                _logger.LogInformation("Registry key ACL restricted to SYSTEM and Administrators");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to restrict registry key ACL");
         }
     }
 

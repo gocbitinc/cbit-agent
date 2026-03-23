@@ -65,8 +65,9 @@ public class SystemInfoCollector
             info.UptimeSeconds = Environment.TickCount64 / 1000;
         }
 
-        _logger.LogInformation(
-            "System info collected:\n" +
+        _logger.LogInformation("System info collected for {Hostname} ({OsType})", info.Hostname, info.OsType);
+        _logger.LogDebug(
+            "System info details:\n" +
             "  Hostname:      {Hostname}\n" +
             "  OS:            {OsVersion} (Build {OsBuild}, {OsType})\n" +
             "  Manufacturer:  {Manufacturer}\n" +

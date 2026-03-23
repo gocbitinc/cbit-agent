@@ -13,6 +13,7 @@ public class NetworkInfoCollector
     private string? _cachedWanIp;
     private DateTime _wanIpCacheTime = DateTime.MinValue;
     private static readonly TimeSpan WanIpCacheLifetime = TimeSpan.FromMinutes(5);
+    private static readonly HttpClient WanIpClient = new() { Timeout = TimeSpan.FromSeconds(5) };
 
     public NetworkInfoCollector(ILogger<NetworkInfoCollector> logger)
     {
@@ -151,8 +152,7 @@ public class NetworkInfoCollector
         {
             try
             {
-                using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-                var ip = (await client.GetStringAsync(endpoint, ct)).Trim();
+                var ip = (await WanIpClient.GetStringAsync(endpoint, ct)).Trim();
                 if (!string.IsNullOrEmpty(ip) && ip.Length <= 45)
                 {
                     _cachedWanIp = ip;

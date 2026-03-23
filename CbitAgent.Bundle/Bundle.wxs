@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <Bundle Name="CBIT RMM Agent"
+          Version="1.0.0"
+          Manufacturer="CBIT Inc."
+          UpgradeCode="3F8A2B1C-6D4E-5A7F-9B0C-1E2D3F4A5B6C">
+
+    <!-- Detect if VC++ 2015-2022 x64 runtime is already installed -->
+    <util:RegistrySearch Root="HKLM"
+                         Key="SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64"
+                         Value="Installed"
+                         Variable="VcRedistInstalled"
+                         Result="value" />
+
+    <!-- Accept CUSTOMER_KEY from command line, pass through to MSI -->
+    <Variable Name="CUSTOMER_KEY" Type="string" Value="" bal:Overridable="yes" />
+
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication LicenseUrl=""
+                                               Theme="none" />
+    </BootstrapperApplication>
+
+    <Chain>
+      <!-- VC++ 2015-2022 x64 Redistributable — skips if already installed -->
+      <ExePackage Id="VcRedist"
+                  Name="vc_redist.x64.exe"
+                  SourceFile="$(sys.SOURCEFILEDIR)..\CbitAgent.Installer\vc_redist.x64.exe"
+                  DetectCondition="VcRedistInstalled"
+                  InstallArguments="/install /quiet /norestart"
+                  RepairArguments="/repair /quiet /norestart"
+                  UninstallArguments="/uninstall /quiet /norestart"
+                  Permanent="yes"
+                  Vital="yes" />
+
+      <!-- CBIT Agent MSI — passes CUSTOMER_KEY through -->
+      <MsiPackage Id="CbitAgentMsi"
+                  SourceFile="$(sys.SOURCEFILEDIR)..\CbitAgent.Installer\bin\Release\CbitAgent.Installer.msi"
+                  Vital="yes">
+        <MsiProperty Name="CUSTOMER_KEY" Value="[CUSTOMER_KEY]" />
+      </MsiPackage>
+    </Chain>
+
+  </Bundle>
+</Wix>

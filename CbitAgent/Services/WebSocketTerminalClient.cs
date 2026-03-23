@@ -116,7 +116,7 @@ public class WebSocketTerminalClient : IDisposable
         var wsUrl = baseUrl
             .Replace("https://", "wss://")
             .Replace("http://", "ws://");
-        var uri = new Uri($"{wsUrl}/api/agent/ws?token={config.AgentToken}");
+        var uri = new Uri($"{wsUrl}/api/agent/ws");
 
         _ws = new ClientWebSocket();
         _ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(30);
@@ -127,12 +127,26 @@ public class WebSocketTerminalClient : IDisposable
 
         _logger.LogInformation("WebSocket connected");
 
-        // Send auth message
-        await SendMessageAsync(new WsOutMessage
+        // Send auth message with token in body (not in URL)
+        var authMessage = JsonSerializer.Serialize(new
         {
-            Type = "auth",
-            Data = config.AgentId
-        }, stoppingToken);
+            type = "auth",
+            agent_token = config.AgentToken,
+            agent_id = config.AgentId
+        });
+        await _sendLock.WaitAsync(stoppingToken);
+        try
+        {
+            await _ws.SendAsync(
+                Encoding.UTF8.GetBytes(authMessage),
+                WebSocketMessageType.Text,
+                true,
+                stoppingToken);
+        }
+        finally
+        {
+            _sendLock.Release();
+        }
 
         // Receive loop
         _receiveCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
@@ -168,7 +182,10 @@ public class WebSocketTerminalClient : IDisposable
                 {
                     await _ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, null, CancellationToken.None);
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Error sending WebSocket close frame");
+                }
                 break;
             }
 
@@ -193,9 +210,6 @@ public class WebSocketTerminalClient : IDisposable
 
     private async Task HandleMessageAsync(string json, CancellationToken ct)
     {
-        // Log every incoming message at Info level for debugging
-        _logger.LogInformation("Received WebSocket message: {Json}", json);
-
         var msg = JsonSerializer.Deserialize<WsMessage>(json, JsonOpts);
         if (msg == null)
         {
@@ -203,7 +217,7 @@ public class WebSocketTerminalClient : IDisposable
             return;
         }
 
-        _logger.LogInformation("Parsed WebSocket message type: {Type}", msg.Type);
+        _logger.LogDebug("Received WebSocket message type: {Type}", msg.Type);
 
         switch (msg.Type)
         {
@@ -258,9 +272,7 @@ public class WebSocketTerminalClient : IDisposable
         var sessionId = msg.SessionId;
         if (string.IsNullOrEmpty(sessionId)) return;
 
-        var shellType = msg.ShellType ?? "powershell";
-
-        _logger.LogInformation("Starting terminal session {SessionId} ({Shell})", sessionId, shellType);
+        _logger.LogInformation("Starting terminal session {SessionId} (powershell)", sessionId);
 
         // Kill existing session with same ID if any
         if (_sessions.TryRemove(sessionId, out var existing))
@@ -270,7 +282,6 @@ public class WebSocketTerminalClient : IDisposable
 
         var session = new TerminalSession(
             sessionId,
-            shellType,
             _logger,
             onOutput: async (sid, data) => await SendMessageAsync(
                 new WsOutMessage { Type = "terminal_output", SessionId = sid, Data = data }, ct),

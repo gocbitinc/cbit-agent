@@ -51,8 +51,15 @@ public class AgentUpdater
                 return false;
             }
 
-            // Step 2: Verify SHA256 hash
-            if (!string.IsNullOrEmpty(command.FileHash))
+            // Step 2: Verify SHA256 hash (mandatory)
+            if (string.IsNullOrEmpty(command.FileHash))
+            {
+                _logger.LogError("Update rejected: server did not provide file hash — update aborted for security");
+                await ReportUpdateResult(currentVersion, targetVersion, "failed", "No file hash provided by server");
+                CleanupStaging(stagingDir);
+                return false;
+            }
+
             {
                 var expectedHash = command.FileHash;
                 if (expectedHash.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase))

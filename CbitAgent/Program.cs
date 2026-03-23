@@ -7,9 +7,59 @@ using Microsoft.Extensions.Logging;
 using Serilog;
 using Serilog.Events;
 
+// Global unhandled exception handler — write to fatal.log directly since Serilog may be unavailable
+AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
+{
+    var ex = e.ExceptionObject as Exception;
+    try
+    {
+        var fatalLogDir = Path.Combine(AppContext.BaseDirectory, "logs");
+        Directory.CreateDirectory(fatalLogDir);
+        var logPath = Path.Combine(fatalLogDir, "fatal.log");
+        File.AppendAllText(logPath,
+            $"{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} FATAL: {ex?.ToString()}\n");
+    }
+    catch { }
+};
+
+TaskScheduler.UnobservedTaskException += (sender, e) =>
+{
+    Log.Error(e.Exception, "Unobserved task exception");
+    e.SetObserved();
+};
+
 // Set up Serilog with file + console + event log sinks at different levels
 var logDir = Path.Combine(AppContext.BaseDirectory, "logs");
 Directory.CreateDirectory(logDir);
+
+// Restrict log directory ACL to SYSTEM and Administrators
+try
+{
+    var logDirInfo = new DirectoryInfo(logDir);
+    var security = logDirInfo.GetAccessControl();
+    security.SetAccessRuleProtection(true, false);
+    security.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(
+        "SYSTEM", System.Security.AccessControl.FileSystemRights.FullControl,
+        System.Security.AccessControl.InheritanceFlags.ContainerInherit | System.Security.AccessControl.InheritanceFlags.ObjectInherit,
+        System.Security.AccessControl.PropagationFlags.None,
+        System.Security.AccessControl.AccessControlType.Allow));
+    security.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(
+        "BUILTIN\\Administrators", System.Security.AccessControl.FileSystemRights.FullControl,
+        System.Security.AccessControl.InheritanceFlags.ContainerInherit | System.Security.AccessControl.InheritanceFlags.ObjectInherit,
+        System.Security.AccessControl.PropagationFlags.None,
+        System.Security.AccessControl.AccessControlType.Allow));
+    logDirInfo.SetAccessControl(security);
+}
+catch (Exception ex)
+{
+    // Serilog not yet configured — write to fatal.log so ACL failures aren't silently lost
+    try
+    {
+        File.AppendAllText(Path.Combine(logDir, "fatal.log"),
+            $"{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} WARNING: Failed to set logs directory ACL: {ex.Message}\n");
+    }
+    catch { }
+}
 
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Information()

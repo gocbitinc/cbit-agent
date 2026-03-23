@@ -5,7 +5,7 @@ using Microsoft.Extensions.Logging;
 namespace CbitAgent.Services;
 
 /// <summary>
-/// Manages a single shell process (cmd or powershell) for one terminal session.
+/// Manages a single PowerShell process for one terminal session.
 /// Reads stdout/stderr as raw bytes (not line-buffered) so prompts and partial
 /// output arrive immediately. Input echo is handled by the caller.
 /// </summary>
@@ -23,7 +23,6 @@ public class TerminalSession : IDisposable
 
     public TerminalSession(
         string sessionId,
-        string shellType,
         ILogger logger,
         Func<string, string, Task> onOutput,
         Func<string, string, Task> onError)
@@ -35,27 +34,19 @@ public class TerminalSession : IDisposable
 
         try
         {
-            var fileName = shellType.Equals("powershell", StringComparison.OrdinalIgnoreCase)
-                ? "powershell.exe"
-                : "cmd.exe";
-
-            // cmd.exe /Q: suppress command echo (agent handles echo instead)
-            // powershell -NonInteractive -Command -: read commands from stdin pipe
-            var arguments = shellType.Equals("powershell", StringComparison.OrdinalIgnoreCase)
-                ? "-NoLogo -NoProfile -NonInteractive -Command -"
-                : "/Q";
-
             _process = new Process
             {
                 StartInfo = new ProcessStartInfo
                 {
-                    FileName = fileName,
-                    Arguments = arguments,
+                    FileName = "powershell.exe",
+                    Arguments = "-NoLogo -NoProfile -NonInteractive -Command -",
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     RedirectStandardInput = true,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8,
                     WorkingDirectory = @"C:\"
                 },
                 EnableRaisingEvents = true
@@ -69,13 +60,13 @@ public class TerminalSession : IDisposable
             _ = ReadStreamAsync(_process.StandardOutput.BaseStream);
             _ = ReadStreamAsync(_process.StandardError.BaseStream);
 
-            _logger.LogInformation("Terminal session {SessionId}: started {Shell} (PID {Pid})",
-                _sessionId, fileName, _process.Id);
+            _logger.LogInformation("Terminal session {SessionId}: started powershell.exe (PID {Pid})",
+                _sessionId, _process.Id);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Terminal session {SessionId}: failed to start shell", _sessionId);
-            _ = _onError(_sessionId, $"Failed to start shell: {ex.Message}");
+            _logger.LogError(ex, "Terminal session {SessionId}: failed to start PowerShell", _sessionId);
+            _ = _onError(_sessionId, $"Failed to start PowerShell: {ex.Message}");
             _process = null;
         }
     }

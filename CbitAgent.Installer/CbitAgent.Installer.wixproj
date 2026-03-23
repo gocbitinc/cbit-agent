@@ -11,4 +11,8 @@
     <DefineConstants>PublishDir=$(AgentPublishDir);PublishTrayDir=$(TrayPublishDir)</DefineConstants>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="WixToolset.Util.wixext" Version="6.0.2" />
+  </ItemGroup>
+
 </Project>

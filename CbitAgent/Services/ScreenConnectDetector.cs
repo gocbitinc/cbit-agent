@@ -29,7 +29,7 @@ public class ScreenConnectDetector
                         if (match.Success)
                         {
                             var guid = match.Groups[1].Value;
-                            _logger.LogInformation("ScreenConnect detected, GUID: {Guid}", guid);
+                            _logger.LogDebug("ScreenConnect detected, GUID: {Guid}", guid);
                             return guid;
                         }
 
@@ -38,7 +38,7 @@ public class ScreenConnectDetector
                         if (match.Success)
                         {
                             var guid = match.Groups[1].Value;
-                            _logger.LogInformation("ScreenConnect detected from display name, GUID: {Guid}", guid);
+                            _logger.LogDebug("ScreenConnect detected from display name, GUID: {Guid}", guid);
                             return guid;
                         }
                     }

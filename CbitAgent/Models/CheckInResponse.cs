@@ -15,6 +15,9 @@ public class CheckInResponse
 
     [JsonPropertyName("pending_script")]
     public PendingScript? PendingScript { get; set; }
+
+    [JsonPropertyName("script_signing_secret")]
+    public string? ScriptSigningSecret { get; set; }
 }
 
 public class AgentCommand
@@ -54,4 +57,7 @@ public class RegisterResponse
 
     [JsonPropertyName("check_in_interval_minutes")]
     public int CheckInIntervalMinutes { get; set; } = 5;
+
+    [JsonPropertyName("script_signing_secret")]
+    public string? ScriptSigningSecret { get; set; }
 }

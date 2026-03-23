@@ -7,6 +7,9 @@ public class ServiceMonitorConfig
     public List<string> Services { get; set; } = new();
     public List<EventWatchEntry> Events { get; set; } = new();
 
+    private const int MaxServices = 50;
+    private const int MaxEvents = 50;
+
     public static ServiceMonitorConfig? Load(string installDir, ILogger logger)
     {
         var path = Path.Combine(installDir, "service-monitor.ini");
@@ -38,10 +41,26 @@ public class ServiceMonitorConfig
 
                 if (currentSection == "services")
                 {
+                    // Validate service name — reject path separators, quotes, or control chars
+                    if (line.IndexOfAny(new[] { '\\', '/', '"', '\'', '<', '>', '|', '&', ';' }) >= 0)
+                    {
+                        logger.LogWarning("Rejected invalid service name in service-monitor.ini: {Name}", line);
+                        continue;
+                    }
+                    if (config.Services.Count >= MaxServices)
+                    {
+                        logger.LogWarning("service-monitor.ini: max {Max} services reached, ignoring rest", MaxServices);
+                        continue;
+                    }
                     config.Services.Add(line);
                 }
                 else if (currentSection == "events")
                 {
+                    if (config.Events.Count >= MaxEvents)
+                    {
+                        logger.LogWarning("service-monitor.ini: max {Max} events reached, ignoring rest", MaxEvents);
+                        continue;
+                    }
                     // Format: EventID=4625, log=Security
                     var entry = ParseEventLine(line);
                     if (entry != null)
