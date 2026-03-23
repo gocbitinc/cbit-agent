@@ -26,11 +26,8 @@ public class NetworkInfoCollector
 
         try
         {
-            var interfaces = NetworkInterface.GetAllNetworkInterfaces()
-                .Where(ni => ni.OperationalStatus == OperationalStatus.Up
-                             && ni.NetworkInterfaceType != NetworkInterfaceType.Loopback
-                             && ni.NetworkInterfaceType != NetworkInterfaceType.Tunnel)
-                .ToList();
+            // Collect ALL adapters — physical, virtual, VPN, Hyper-V, tunnel, loopback
+            var interfaces = NetworkInterface.GetAllNetworkInterfaces();
 
             // Parse WiFi details once
             var wifiDetails = GetWifiDetails();
@@ -40,10 +37,9 @@ public class NetworkInfoCollector
                 try
                 {
                     var adapter = MapAdapter(ni);
-                    if (adapter == null) continue;
 
                     // Enrich WiFi adapters with netsh data
-                    if (adapter.Type == "wifi" && wifiDetails != null)
+                    if (adapter.Type == "Wireless" && wifiDetails != null)
                     {
                         adapter.WifiSsid = wifiDetails.Ssid;
                         adapter.WifiSignalStrength = wifiDetails.SignalStrength;
@@ -59,8 +55,8 @@ public class NetworkInfoCollector
                 }
             }
 
-            // Determine primary adapter (the one with a default gateway)
-            var primary = adapters.FirstOrDefault(a => !string.IsNullOrEmpty(a.DefaultGateway));
+            // Determine primary adapter (first up adapter with a default gateway)
+            var primary = adapters.FirstOrDefault(a => !string.IsNullOrEmpty(a.Gateway));
             if (primary != null)
             {
                 primary.IsPrimary = true;
@@ -75,33 +71,37 @@ public class NetworkInfoCollector
         return adapters;
     }
 
-    private NetworkAdapter? MapAdapter(NetworkInterface ni)
+    private NetworkAdapter MapAdapter(NetworkInterface ni)
     {
         var ipProps = ni.GetIPProperties();
-        var ipv4Addr = ipProps.UnicastAddresses
-            .FirstOrDefault(a => a.Address.AddressFamily == AddressFamily.InterNetwork);
-
-        // Skip adapters with no IPv4 address
-        if (ipv4Addr == null) return null;
 
         var adapter = new NetworkAdapter
         {
             Name = ni.Description,
             Type = MapType(ni.NetworkInterfaceType),
-            MacAddress = FormatMac(ni.GetPhysicalAddress()),
-            IpAddress = ipv4Addr.Address.ToString(),
-            SubnetMask = ipv4Addr.IPv4Mask?.ToString(),
-            DhcpEnabled = false
+            Mac = FormatMac(ni.GetPhysicalAddress()),
+            Dhcp = false
         };
 
-        // Default gateway
+        // Collect ALL IP addresses bound to this adapter (IPv4 and IPv6)
+        foreach (var unicast in ipProps.UnicastAddresses)
+        {
+            var addr = new AdapterAddress { Ip = unicast.Address.ToString() };
+
+            if (unicast.Address.AddressFamily == AddressFamily.InterNetwork)
+                addr.Subnet = unicast.IPv4Mask?.ToString();
+
+            adapter.Addresses.Add(addr);
+        }
+
+        // Default gateway (prefer IPv4)
         var gateway = ipProps.GatewayAddresses
-            .FirstOrDefault(g => g.Address.AddressFamily == AddressFamily.InterNetwork);
-        adapter.DefaultGateway = gateway?.Address.ToString();
+            .FirstOrDefault(g => g.Address.AddressFamily == AddressFamily.InterNetwork)
+            ?? ipProps.GatewayAddresses.FirstOrDefault();
+        adapter.Gateway = gateway?.Address.ToString();
 
         // DNS servers
         adapter.DnsServers = ipProps.DnsAddresses
-            .Where(d => d.AddressFamily == AddressFamily.InterNetwork)
             .Select(d => d.ToString())
             .ToList();
 
@@ -109,11 +109,11 @@ public class NetworkInfoCollector
         try
         {
             var ipv4Props = ipProps.GetIPv4Properties();
-            adapter.DhcpEnabled = ipv4Props.IsDhcpEnabled;
+            adapter.Dhcp = ipv4Props.IsDhcpEnabled;
         }
         catch
         {
-            // Some adapters don't support IPv4 properties
+            // Some adapters don't support IPv4 properties (e.g. IPv6-only, tunnel)
         }
 
         return adapter;
@@ -123,12 +123,15 @@ public class NetworkInfoCollector
     {
         return type switch
         {
-            NetworkInterfaceType.Ethernet => "ethernet",
-            NetworkInterfaceType.GigabitEthernet => "ethernet",
-            NetworkInterfaceType.FastEthernetT => "ethernet",
-            NetworkInterfaceType.FastEthernetFx => "ethernet",
-            NetworkInterfaceType.Wireless80211 => "wifi",
-            _ => "other"
+            NetworkInterfaceType.Ethernet => "Ethernet",
+            NetworkInterfaceType.GigabitEthernet => "Ethernet",
+            NetworkInterfaceType.FastEthernetT => "Ethernet",
+            NetworkInterfaceType.FastEthernetFx => "Ethernet",
+            NetworkInterfaceType.Wireless80211 => "Wireless",
+            NetworkInterfaceType.Loopback => "Loopback",
+            NetworkInterfaceType.Tunnel => "Tunnel",
+            NetworkInterfaceType.Ppp => "VPN",
+            _ => type.ToString()
         };
     }
 

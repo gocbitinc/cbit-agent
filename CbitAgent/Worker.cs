@@ -225,6 +225,14 @@ public class Worker : BackgroundService
         var screenConnectGuid = _screenConnectDetector.DetectGuid();
         var wanIp = await _networkInfoCollector.GetWanIpAsync(ct);
 
+        // Collect new telemetry data points — each in try/catch so failures are isolated
+        var cpuUsage = _systemInfoCollector.CollectCpuUsage();
+        var ramUsage = _systemInfoCollector.CollectRamUsage();
+        var pendingReboot = _systemInfoCollector.CollectPendingReboot();
+        var (defenderEnabled, defenderDefsDate, defenderScanDays) = _systemInfoCollector.CollectDefenderStatus();
+        var bitlockerStatus = _systemInfoCollector.CollectBitLockerStatus();
+        var localAdmins = _systemInfoCollector.CollectLocalAdmins();
+
         var payload = new CheckInPayload
         {
             AgentId = config.AgentId!,
@@ -235,7 +243,15 @@ public class Worker : BackgroundService
             Disks = disks,
             SmartData = smartData,
             ScreenConnectGuid = screenConnectGuid,
-            WanIp = wanIp
+            WanIp = wanIp,
+            CpuUsage = cpuUsage,
+            RamUsage = ramUsage,
+            PendingReboot = pendingReboot,
+            DefenderEnabled = defenderEnabled,
+            DefenderDefinitionsDate = defenderDefsDate,
+            DefenderLastScanDays = defenderScanDays,
+            BitLockerStatus = bitlockerStatus,
+            LocalAdmins = localAdmins
         };
 
         var response = await _apiClient.CheckInAsync(payload, ct);

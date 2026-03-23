@@ -30,4 +30,37 @@ public class CheckInPayload
 
     [JsonPropertyName("wan_ip")]
     public string? WanIp { get; set; }
+
+    [JsonPropertyName("cpu_usage")]
+    public float? CpuUsage { get; set; }
+
+    [JsonPropertyName("ram_usage")]
+    public float? RamUsage { get; set; }
+
+    [JsonPropertyName("pending_reboot")]
+    public bool? PendingReboot { get; set; }
+
+    [JsonPropertyName("defender_enabled")]
+    public bool? DefenderEnabled { get; set; }
+
+    [JsonPropertyName("defender_definitions_date")]
+    public string? DefenderDefinitionsDate { get; set; }
+
+    [JsonPropertyName("defender_last_scan_days")]
+    public int? DefenderLastScanDays { get; set; }
+
+    [JsonPropertyName("bitlocker_status")]
+    public List<BitLockerDrive>? BitLockerStatus { get; set; }
+
+    [JsonPropertyName("local_admins")]
+    public List<string>? LocalAdmins { get; set; }
+}
+
+public class BitLockerDrive
+{
+    [JsonPropertyName("drive")]
+    public string Drive { get; set; } = string.Empty;
+
+    [JsonPropertyName("protected")]
+    public bool Protected { get; set; }
 }

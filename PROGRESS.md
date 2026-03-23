@@ -1,5 +1,56 @@
 # CBIT Agent — Progress
 
+## 2026-03-22: Network Adapter Collection Rewrite
+
+**Rewritten** — network adapter collection now reports ALL adapters (physical, virtual, VPN, Hyper-V, tunnel, loopback) with all bound IP addresses per adapter.
+
+**Changes:**
+- `Models/NetworkAdapter.cs` — Replaced single `ip_address`/`subnet_mask` with `addresses` array of `{ip, subnet}` objects. Renamed `mac_address` → `mac`, `default_gateway` → `gateway`, `dhcp_enabled` → `dhcp` to match requested JSON structure. Added `AdapterAddress` model.
+- `Services/NetworkInfoCollector.cs` — Removed filter that excluded Loopback/Tunnel adapters. Removed "skip if no IPv4" check. Now iterates all `UnicastAddresses` per adapter (IPv4 and IPv6). Type mapping expanded: Loopback, Tunnel, VPN (PPP), plus `type.ToString()` fallback.
+
+**JSON structure:**
+```json
+{
+  "name": "Intel(R) Ethernet Connection",
+  "type": "Ethernet",
+  "mac": "C8:F7:50:FB:9D:46",
+  "dhcp": true,
+  "gateway": "192.168.1.1",
+  "addresses": [
+    { "ip": "192.168.1.57", "subnet": "255.255.255.0" },
+    { "ip": "fe80::1234:5678:abcd:ef01", "subnet": null }
+  ],
+  "dns_servers": ["8.8.8.8"],
+  "is_primary": true,
+  "wifi_ssid": null,
+  "wifi_signal_strength": null,
+  "wifi_link_speed": null,
+  "wifi_frequency_band": null
+}
+```
+
+**Breaking change:** Server must expect `mac`/`dhcp`/`gateway`/`addresses` instead of old `mac_address`/`dhcp_enabled`/`default_gateway`/`ip_address`/`subnet_mask`.
+
+## 2026-03-22: New Check-in Telemetry (7 Data Points)
+
+Added 6 new fields to check-in payload (`uptime_seconds` already existed in `system_info`):
+
+1. **cpu_usage** (float, 0-100) — `PerformanceCounter("Processor", "% Processor Time", "_Total")` with 500ms delay (first read is always 0)
+2. **ram_usage** (float, 0-100) — WMI `Win32_OperatingSystem` TotalVisibleMemorySize vs FreePhysicalMemory
+3. **uptime_seconds** (long) — Already existed in `system_info` from `SystemInfoCollector`
+4. **pending_reboot** (boolean) — Checks 4 registry locations: CBS\RebootPending, WU\RebootRequired, Session Manager\PendingFileRenameOperations, Updates\UpdateExeVolatile
+5. **defender_enabled** (bool|null), **defender_definitions_date** (ISO date|null), **defender_last_scan_days** (int|null) — WMI `MSFT_MpComputerStatus` from `root\Microsoft\Windows\Defender`. Nulls if Defender not installed.
+6. **bitlocker_status** (array) — WMI `Win32_EncryptableVolume` from `root\cimv2\Security\MicrosoftVolumeEncryption`. Empty array if namespace missing (Home editions).
+7. **local_admins** (string array) — WinNT ADSI provider, `DOMAIN\username` format, excludes built-in Administrator account.
+
+**Files changed:**
+- `Models/CheckInPayload.cs` — 8 new fields + `BitLockerDrive` model
+- `Services/SystemInfoCollector.cs` — 6 new collection methods, each in try/catch
+- `Worker.cs` — Wire new collectors into `PerformCheckInAsync`
+- `CbitAgent.csproj` — Added `System.DirectoryServices` and `System.Diagnostics.PerformanceCounter` packages
+
+Every collection method has its own try/catch — if any single item fails, it sends null and the rest of the check-in proceeds normally.
+
 ## 2026-03-22: CMD Terminal Removed — PowerShell Only
 
 **Decision:** Removed CMD terminal support entirely. CMD's stdout buffering with redirected I/O (no real console/ConPTY) caused silent output — the UTF-8 encoding fix didn't resolve it. ConPTY would solve it but adds significant complexity. PowerShell covers all real-world RMM use cases.
