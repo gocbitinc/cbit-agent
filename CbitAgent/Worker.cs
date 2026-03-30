@@ -18,7 +18,6 @@ public class Worker : BackgroundService
     private readonly InstalledAppsCollector _installedAppsCollector;
     private readonly PatchInfoCollector _patchInfoCollector;
     private readonly ScreenConnectDetector _screenConnectDetector;
-    private readonly AgentUpdater _agentUpdater;
     private readonly WebSocketTerminalClient _wsTerminalClient;
     private readonly WindowsUpdateExecutor _windowsUpdateExecutor;
     private readonly ScriptExecutor _scriptExecutor;
@@ -41,7 +40,6 @@ public class Worker : BackgroundService
         InstalledAppsCollector installedAppsCollector,
         PatchInfoCollector patchInfoCollector,
         ScreenConnectDetector screenConnectDetector,
-        AgentUpdater agentUpdater,
         WebSocketTerminalClient wsTerminalClient,
         WindowsUpdateExecutor windowsUpdateExecutor,
         ScriptExecutor scriptExecutor,
@@ -56,7 +54,6 @@ public class Worker : BackgroundService
         _installedAppsCollector = installedAppsCollector;
         _patchInfoCollector = patchInfoCollector;
         _screenConnectDetector = screenConnectDetector;
-        _agentUpdater = agentUpdater;
         _wsTerminalClient = wsTerminalClient;
         _windowsUpdateExecutor = windowsUpdateExecutor;
         _scriptExecutor = scriptExecutor;
@@ -115,9 +112,6 @@ public class Worker : BackgroundService
                 return;
             }
         }
-
-        // Check for pending update result from a previous update
-        await _agentUpdater.CheckPendingUpdateResultAsync(stoppingToken);
 
         // Report apps and patches on first check-in
         _checkInCount = 0;
@@ -222,7 +216,7 @@ public class Worker : BackgroundService
         var networkAdapters = _networkInfoCollector.CollectAdapters();
         var disks = _diskInfoCollector.CollectDisks();
         var smartData = _diskInfoCollector.CollectSmartData();
-        var screenConnectGuid = _screenConnectDetector.DetectGuid();
+        var screenConnectGuid = _screenConnectDetector.DetectGuid(config.ScreenConnectInstanceId);
         var wanIp = await _networkInfoCollector.GetWanIpAsync(ct);
 
         // Collect new telemetry data points — each in try/catch so failures are isolated
@@ -277,6 +271,9 @@ public class Worker : BackgroundService
 
         // Refresh script signing secret if server provides one
         _configManager.UpdateScriptSigningSecret(response.ScriptSigningSecret);
+
+        // Update ScreenConnect instance ID if server provides one
+        _configManager.UpdateScreenConnectInstanceId(response.ScreenConnectInstanceId);
 
         // Process commands
         await ProcessCommandsAsync(response.Commands, ct);
@@ -346,7 +343,7 @@ public class Worker : BackgroundService
         }
     }
 
-    private async Task ProcessCommandsAsync(List<AgentCommand> commands, CancellationToken ct)
+    private Task ProcessCommandsAsync(List<AgentCommand> commands, CancellationToken ct)
     {
         foreach (var command in commands)
         {
@@ -354,17 +351,6 @@ public class Worker : BackgroundService
             {
                 switch (command.Type)
                 {
-                    case "update_agent":
-                        _logger.LogInformation("Received update_agent command for version {Version}",
-                            command.Version);
-                        var updateStarted = await _agentUpdater.ProcessUpdateCommandAsync(command, ct);
-                        if (updateStarted)
-                        {
-                            _logger.LogInformation("Update process initiated, service will restart...");
-                            return;
-                        }
-                        break;
-
                     case "install_kb":
                         _logger.LogInformation("Received install_kb command for {Kb}", command.KbNumber);
                         _ = HandleInstallKbAsync(command, ct);
@@ -386,6 +372,7 @@ public class Worker : BackgroundService
                 _logger.LogError(ex, "Error processing command: {Type}", command.Type);
             }
         }
+        return Task.CompletedTask;
     }
 
     private async Task ReportAppsAsync(CancellationToken ct)

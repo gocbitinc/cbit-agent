@@ -123,15 +123,23 @@ public class WebSocketTerminalClient : IDisposable
 
         _logger.LogInformation("WebSocket connecting to {Url}...", $"{wsUrl}/api/agent/ws");
 
+        // Request a scoped terminal session token before connecting
+        var sessionToken = await _apiClient.RequestTerminalSessionTokenAsync(stoppingToken);
+        if (string.IsNullOrEmpty(sessionToken))
+        {
+            _logger.LogWarning("Failed to obtain terminal session token, falling back to agent token");
+            sessionToken = config.AgentToken;
+        }
+
         await _ws.ConnectAsync(uri, stoppingToken);
 
         _logger.LogInformation("WebSocket connected");
 
-        // Send auth message with token in body (not in URL)
+        // Send auth message with session token in body (not in URL)
         var authMessage = JsonSerializer.Serialize(new
         {
             type = "auth",
-            agent_token = config.AgentToken,
+            session_token = sessionToken,
             agent_id = config.AgentId
         });
         await _sendLock.WaitAsync(stoppingToken);

@@ -1,5 +1,4 @@
 using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using CbitAgent.Configuration;
@@ -87,22 +86,6 @@ public class ApiClient
         return result.ValueKind != JsonValueKind.Undefined;
     }
 
-    public async Task<bool> ReportUpdateResultAsync(string agentId, string fromVersion,
-        string toVersion, string status, string? errorMessage, CancellationToken ct = default)
-    {
-        SetAuthHeaders();
-        var payload = new
-        {
-            agent_id = agentId,
-            from_version = fromVersion,
-            to_version = toVersion,
-            status,
-            error_message = errorMessage
-        };
-        var result = await PostWithRetryAsync<JsonElement>($"{BaseUrl}/update-agent-result", payload, useAuth: true, ct);
-        return result.ValueKind != JsonValueKind.Undefined;
-    }
-
     public async Task<bool> ReportUpdateJobResultAsync(
         string agentId, string jobType, string? policyId, string? adhocJobId,
         DateTime startedAt, DateTime completedAt, string status,
@@ -145,6 +128,23 @@ public class ApiClient
         return response.ValueKind != System.Text.Json.JsonValueKind.Undefined;
     }
 
+    /// <summary>
+    /// Requests a short-lived terminal session token from the server.
+    /// The token is scoped to WebSocket terminal sessions only.
+    /// Returns the session token string, or null on failure.
+    /// </summary>
+    public async Task<string?> RequestTerminalSessionTokenAsync(CancellationToken ct = default)
+    {
+        SetAuthHeaders();
+        var payload = new { agent_id = _configManager.Config.AgentId };
+        var result = await PostWithRetryAsync<JsonElement>($"{BaseUrl}/terminal-session-token", payload, useAuth: true, ct);
+        if (result.ValueKind == JsonValueKind.Object && result.TryGetProperty("session_token", out var tokenProp))
+        {
+            return tokenProp.GetString();
+        }
+        return null;
+    }
+
     public async Task PostAlertsAsync(List<object> alerts, CancellationToken ct = default)
     {
         try
@@ -161,46 +161,6 @@ public class ApiClient
         {
             _logger.LogError(ex, "Failed to post {Count} alerts", alerts.Count);
         }
-    }
-
-    public async Task<bool> DownloadFileAsync(string relativeUrl, string destinationPath, CancellationToken ct = default)
-    {
-        var url = _configManager.Config.ServerUrl.TrimEnd('/') + relativeUrl;
-        SetAuthHeaders();
-
-        for (int attempt = 1; attempt <= MaxRetries; attempt++)
-        {
-            try
-            {
-                _logger.LogInformation("Downloading file from {Url} (attempt {Attempt})", url, attempt);
-
-                using var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-                response.EnsureSuccessStatusCode();
-
-                var dir = Path.GetDirectoryName(destinationPath);
-                if (!string.IsNullOrEmpty(dir))
-                    Directory.CreateDirectory(dir);
-
-                await using var stream = await response.Content.ReadAsStreamAsync(ct);
-                await using var fileStream = new FileStream(destinationPath, FileMode.Create, FileAccess.Write);
-                await stream.CopyToAsync(fileStream, ct);
-
-                _logger.LogInformation("Downloaded file to {Path}", destinationPath);
-                return true;
-            }
-            catch (Exception ex) when (attempt < MaxRetries && !ct.IsCancellationRequested)
-            {
-                _logger.LogWarning(ex, "Download attempt {Attempt} failed, retrying...", attempt);
-                await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt)), ct);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Download failed after {MaxRetries} attempts", MaxRetries);
-                return false;
-            }
-        }
-
-        return false;
     }
 
     private async Task<T> PostWithRetryAsync<T>(string url, object payload, bool useAuth, CancellationToken ct)
@@ -225,7 +185,8 @@ public class ApiClient
                 response.EnsureSuccessStatusCode();
 
                 var responseJson = await response.Content.ReadAsStringAsync(ct);
-                _logger.LogDebug("Response: {Response}", responseJson);
+                _logger.LogDebug("POST {Url} returned {StatusCode} ({Length} bytes)",
+                    url, (int)response.StatusCode, responseJson.Length);
 
                 var result = JsonSerializer.Deserialize<T>(responseJson, JsonOptions);
                 return result ?? default!;

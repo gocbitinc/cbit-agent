@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using CbitAgent.Configuration;
 using CbitAgent.Models;
 using Microsoft.Extensions.Logging;
@@ -36,9 +37,9 @@ public class ScriptExecutor
             return;
         }
 
-        // Verify HMAC-SHA256 signature before any execution
+        // Verify HMAC-SHA256 signature before any execution (covers full payload)
         var signingSecret = _configManager.Config.ScriptSigningSecret;
-        if (!VerifyScriptSignature(script.ScriptContent, script.ScriptSignature, signingSecret))
+        if (!VerifyScriptSignature(script, signingSecret))
         {
             _logger.LogError("Script execution {ExecutionId}: signature verification failed, aborting", executionId);
             await ReportResultAsync(executionId, new ScriptResult
@@ -208,12 +209,30 @@ public class ScriptExecutor
         };
     }
 
+    /// <summary>
+    /// Allowed domains for helper file downloads. Files from external domains are rejected.
+    /// </summary>
+    private static readonly HashSet<string> AllowedDownloadDomains = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "axis.gocbit.com"
+    };
+
     private async Task DownloadFileAsync(string url, string destinationPath)
     {
-        var config = _configManager.Config;
+        // Validate URL domain — only allow downloads from trusted domains
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            throw new InvalidOperationException($"Helper file URL is not a valid absolute URL");
+        }
+
+        if (!AllowedDownloadDomains.Contains(uri.Host))
+        {
+            _logger.LogError("Helper file download rejected: domain {Domain} is not in the allowlist", uri.Host);
+            throw new InvalidOperationException($"Helper file download rejected: domain '{uri.Host}' is not allowed");
+        }
+
+        // No Authorization header — helper file downloads are unauthenticated
         var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.Authorization =
-            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.AgentToken);
 
         using var response = await SharedHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
         response.EnsureSuccessStatusCode();
@@ -242,7 +261,15 @@ public class ScriptExecutor
         return value[..maxLength] + "\n\n--- OUTPUT TRUNCATED AT 256KB ---";
     }
 
-    private bool VerifyScriptSignature(string scriptContent, string? signature, string? secret)
+    /// <summary>
+    /// Verifies HMAC-SHA256 signature over the full script payload:
+    /// script_content + sorted variables + sorted helper file metadata.
+    /// Server must sign the same canonical payload.
+    /// Canonical format: script_content + \n + sorted variables JSON + \n + sorted files JSON
+    /// Variables: [["key","value"],...] sorted by key
+    /// Files: [["filename","download_url"],...] sorted by filename
+    /// </summary>
+    private bool VerifyScriptSignature(PendingScript script, string? secret)
     {
         if (string.IsNullOrEmpty(secret))
         {
@@ -250,19 +277,49 @@ public class ScriptExecutor
             return false;
         }
 
-        if (string.IsNullOrEmpty(signature))
+        if (string.IsNullOrEmpty(script.ScriptSignature))
         {
             _logger.LogError("Script rejected: no signature provided in payload");
             return false;
         }
 
+        // Build canonical payload: script_content + variables + files
+        var payload = new StringBuilder();
+        payload.Append(script.ScriptContent);
+
+        // Append sorted variables as JSON array of [key, value] pairs
+        payload.Append('\n');
+        if (script.Variables != null && script.Variables.Count > 0)
+        {
+            var sorted = script.Variables.OrderBy(kv => kv.Key, StringComparer.Ordinal)
+                .Select(kv => new[] { kv.Key, kv.Value });
+            payload.Append(JsonSerializer.Serialize(sorted));
+        }
+        else
+        {
+            payload.Append("[]");
+        }
+
+        // Append sorted files metadata as JSON array of [filename, download_url] pairs
+        payload.Append('\n');
+        if (script.Files != null && script.Files.Count > 0)
+        {
+            var sorted = script.Files.OrderBy(f => f.Filename, StringComparer.Ordinal)
+                .Select(f => new[] { f.Filename, f.DownloadUrl });
+            payload.Append(JsonSerializer.Serialize(sorted));
+        }
+        else
+        {
+            payload.Append("[]");
+        }
+
         using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
-        var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(scriptContent));
+        var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(payload.ToString()));
         var computed = Convert.ToHexString(hash).ToLowerInvariant();
 
         if (!CryptographicOperations.FixedTimeEquals(
             Encoding.UTF8.GetBytes(computed),
-            Encoding.UTF8.GetBytes(signature)))
+            Encoding.UTF8.GetBytes(script.ScriptSignature)))
         {
             _logger.LogError("Script rejected: HMAC signature verification failed — possible tampering");
             return false;

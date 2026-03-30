@@ -157,4 +157,16 @@ public class ConfigManager
             }
         }
     }
+
+    public void UpdateScreenConnectInstanceId(string? instanceId)
+    {
+        lock (_lock)
+        {
+            if (!string.IsNullOrEmpty(instanceId) && instanceId != _config.ScreenConnectInstanceId)
+            {
+                _config.ScreenConnectInstanceId = instanceId;
+                Save();
+            }
+        }
+    }
 }

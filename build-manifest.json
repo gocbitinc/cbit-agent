@@ -1,0 +1,4 @@
+{
+  "_comment": "SHA256 hashes of published binaries. Updated by build-and-verify.ps1 after each publish. Verified before MSI packaging.",
+  "binaries": {}
+}

@@ -51,12 +51,7 @@ public class TrayApiClient
         if (!IsConfigured)
             return (false, null, "Agent is not configured or registered");
 
-        using var handler = new HttpClientHandler
-        {
-            ServerCertificateCustomValidationCallback = (_, _, _, _) => true
-        };
-
-        using var httpClient = new HttpClient(handler)
+        using var httpClient = new HttpClient
         {
             Timeout = TimeSpan.FromSeconds(30)
         };

@@ -22,6 +22,9 @@ public class AgentConfig
     [JsonPropertyName("script_signing_secret")]
     public string? ScriptSigningSecret { get; set; }
 
+    [JsonPropertyName("screenconnect_instance_id")]
+    public string? ScreenConnectInstanceId { get; set; }
+
     [JsonIgnore]
     public bool IsRegistered => !string.IsNullOrEmpty(AgentId) && !string.IsNullOrEmpty(AgentToken);
 }

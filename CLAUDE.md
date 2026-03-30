@@ -18,10 +18,10 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 ## Architecture
 - .NET 8 Worker Service, self-contained single-file publish for win-x64 (~68 MB)
 - .NET 8 WinForms tray app, self-contained single-file publish for win-x64 (~155 MB)
-- config.json next to exe: server_url, customer_key, agent_id, agent_token
+- config.json next to exe: server_url, customer_key, agent_id, agent_token, screenconnect_instance_id
 - Server API base: https://axis.gocbit.com/api/agent/
 - WebSocket: wss://axis.gocbit.com/api/agent/ws
-- Auth: agent_token JWT in Authorization header for HTTP; WebSocket auth sends `{type: "auth", agent_token, agent_id}` in message body (no token in URL)
+- Auth: agent_token JWT in Authorization header for HTTP; WebSocket auth sends `{type: "auth", session_token, agent_id}` using a scoped terminal session token (falls back to agent_token if server doesn't support session tokens yet)
 
 ## Repository
 - GitHub: https://github.com/gocbitinc/cbit-agent.git
@@ -38,15 +38,14 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 ## Key Files — Agent Service (CbitAgent/)
 - Program.cs — DI setup, Windows Service config, Serilog logging (file + console + event log)
 - Worker.cs — main loop (registration, check-in, WebSocket, WU commands)
-- Services/ApiClient.cs — HTTP client with retry, update job result reporting
+- Services/ApiClient.cs — HTTP client with retry, update job result reporting, terminal session token request
 - Services/SystemInfoCollector.cs — WMI queries
 - Services/NetworkInfoCollector.cs — all adapters (physical/virtual/VPN/tunnel/loopback), all IPs per adapter, WiFi, WAN IP
 - Services/DiskInfoCollector.cs — drives, SMART
 - Services/InstalledAppsCollector.cs — registry query
 - Services/PatchInfoCollector.cs — WMI + WUApiLib
-- Services/ScreenConnectDetector.cs — service name parse
-- Services/AgentUpdater.cs — download, hash verify, rollback
-- Services/WebSocketTerminalClient.cs — terminal relay + WU command routing + install_kb + reboot
+- Services/ScreenConnectDetector.cs — registry ImagePath parse for session GUID (s= parameter)
+- Services/WebSocketTerminalClient.cs — terminal relay + WU command routing + install_kb + reboot + scoped session token auth
 - Services/TerminalSession.cs — PowerShell process with raw byte I/O (CMD removed)
 - Services/WindowsUpdateExecutor.cs — WUApiLib COM: scan, install, policy filter, reboot check
 - Models/TerminalMessages.cs — WsMessage/WsOutMessage (terminal + WU fields)
@@ -121,8 +120,9 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 ## Scripting Engine
 - Server delivers PowerShell scripts via `pending_script` in heartbeat response
 - One script at a time (`_scriptInProgress` guard), queued scripts re-sent next heartbeat
-- **HMAC-SHA256 signature verification**: every script must include `script_signature` (lowercase hex HMAC-SHA256 of raw `script_content`). Agent verifies using `script_signing_secret` from config.json (delivered at registration, refreshed every check-in). Uses `CryptographicOperations.FixedTimeEquals` (timing-attack safe). Rejects ALL scripts if secret missing, signature missing, or mismatch.
+- **HMAC-SHA256 signature verification**: every script must include `script_signature` (lowercase hex HMAC-SHA256 over canonical payload: `script_content\n[sorted_variables]\n[sorted_files]`). Agent verifies using `script_signing_secret` from config.json (delivered at registration, refreshed every check-in). Uses `CryptographicOperations.FixedTimeEquals` (timing-attack safe). Rejects ALL scripts if secret missing, signature missing, or mismatch.
 - Variable injection: replaces `{{Key}}` in script content before execution
+- Helper files: downloaded without auth header; restricted to `axis.gocbit.com` domain only (external URLs rejected)
 - Files downloaded to temp working directory (`axis-script-{executionId}`)
 - PowerShell: `-NoProfile -NonInteractive -ExecutionPolicy Bypass -File`
 - Timeout: `Kill(entireProcessTree: true)` after `timeout_seconds`
@@ -152,13 +152,16 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 - Format: `2026-03-21 14:23:01 [INF] CbitAgent.Worker: Check-in successful`
 - NuGet: Serilog.Extensions.Hosting, Serilog.Sinks.File, Serilog.Sinks.Console, Serilog.Sinks.EventLog
 
-## Security Hardening (2026-03-22)
-- TLS: Strict certificate validation, no bypass path in code. For local dev with self-signed certs, add the cert to the Windows trusted root certificate store.
+## Security Hardening (2026-03-22, audit 2026-03-23)
+- Auto-update removed permanently — updates delivered via Axis PowerShell scripts
+- TLS: Strict certificate validation across all projects (agent service, tray app). No bypass path in code.
 - config.json ACL: Restricted to SYSTEM + Administrators on every write and on startup (disables inheritance).
 - Registry ACL: `HKLM\SOFTWARE\CBIT\Agent` restricted to SYSTEM + Administrators on startup.
-- Update integrity: SHA256 file hash is mandatory for all agent updates (rejects if server omits hash).
-- WebSocket auth: Token sent in message body as `{type: "auth", agent_token, agent_id}`. No token in URL query string.
-- Logging: Sensitive data (serial numbers, GUIDs, domains, usernames, full WS messages) moved to Debug level.
+- HMAC signing: covers full script payload (content + variables + helper files), not just script_content
+- Helper files: agent token never sent to download URLs; domain restricted to axis.gocbit.com
+- Debug logging: no response bodies, tokens, secrets, or credentials logged at any level
+- WebSocket auth: scoped session token sent in message body as `{type: "auth", session_token, agent_id}`. No token in URL.
+- MSI build integrity: `build-and-verify.ps1` verifies binary SHA256 hashes against `build-manifest.json` before packaging
 - 401 re-registration: Agent clears token and re-registers when server returns 401 Unauthorized.
 
 ## Production Readiness (2026-03-22)
@@ -171,8 +174,9 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 - Check-in overlap guard: skips cycle if previous check-in is still running
 
 ## Known Issues
-- WebSocket server must accept auth-by-message: `{type: "auth", agent_token, agent_id}` — agent no longer sends token in URL
-- No MSI auto-update yet (agent_updater logic exists but untested)
+- WebSocket server must accept auth-by-message with `session_token` — agent requests scoped token via `POST /api/agent/terminal-session-token`, falls back to agent_token if endpoint not implemented yet
+- Server must update HMAC signing to cover full canonical payload (see PROGRESS.md)
+- Server must serve helper files without auth header (or use signed URLs)
 - Support request endpoint /api/agent/support-request needs server-side implementation
 
 ## Remaining Work

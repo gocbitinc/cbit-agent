@@ -18,21 +18,15 @@ public class CheckInResponse
 
     [JsonPropertyName("script_signing_secret")]
     public string? ScriptSigningSecret { get; set; }
+
+    [JsonPropertyName("screenconnect_instance_id")]
+    public string? ScreenConnectInstanceId { get; set; }
 }
 
 public class AgentCommand
 {
     [JsonPropertyName("type")]
     public string Type { get; set; } = string.Empty;
-
-    [JsonPropertyName("version")]
-    public string? Version { get; set; }
-
-    [JsonPropertyName("download_url")]
-    public string? DownloadUrl { get; set; }
-
-    [JsonPropertyName("file_hash")]
-    public string? FileHash { get; set; }
 
     [JsonPropertyName("kb_number")]
     public string? KbNumber { get; set; }

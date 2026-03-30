@@ -1,5 +1,114 @@
 # CBIT Agent — Progress
 
+## 2026-03-23: Security Audit — 7 Hardening Changes
+
+Based on third-party security audit findings. All changes applied in one pass.
+
+### 1. Auto-Update Removed Permanently
+- Deleted `AgentUpdater.cs` entirely
+- Removed all references from `Worker.cs` (field, constructor, DI, `update_agent` command case, `CheckPendingUpdateResultAsync` call)
+- Removed `AgentUpdater` from `Program.cs` DI registration
+- Removed `ReportUpdateResultAsync` and `DownloadFileAsync` from `ApiClient.cs` (only used by updater)
+- Removed `version`, `download_url`, `file_hash` fields from `AgentCommand` model
+- Future updates delivered via PowerShell scripts through Axis
+- Also resolves audit findings #2 (version string command injection) and #4 (update hash trust)
+
+### 2. HMAC Signing Extended to Full Script Payload
+- `VerifyScriptSignature` now takes the full `PendingScript` object instead of just `script_content`
+- Canonical signed payload: `script_content + \n + sorted_variables_json + \n + sorted_files_json`
+- Variables: sorted by key as `[["key","value"],...]` JSON array
+- Files: sorted by filename as `[["filename","download_url"],...]` JSON array
+- Empty variables/files produce `[]` (never omitted)
+- **Server must update**: signing algorithm must compute HMAC over the same canonical payload
+
+### 3. Agent Token No Longer Sent to Helper File URLs
+- `ScriptExecutor.DownloadFileAsync` no longer attaches `Authorization: Bearer` header
+- Domain allowlist enforced: only `axis.gocbit.com` is allowed
+- Any external domain URL causes script failure with log entry
+- **Server must update**: helper file download endpoint must serve files without auth, or use signed URLs
+
+### 4. Debug Logging of Response Bodies Removed
+- `ApiClient.PostWithRetryAsync`: replaced `LogDebug("Response: {Response}", responseJson)` with structured log: status code + byte count only
+- Full audit of all `Log*` calls confirmed no tokens, secrets, or credentials are logged at any level
+
+### 5. TLS Certificate Validation Restored (Tray App)
+- `TrayApiClient.cs`: removed `ServerCertificateCustomValidationCallback = (_, _, _, _) => true`
+- Now uses plain `new HttpClient()` with default OS TLS validation
+- Solution-wide grep confirms zero TLS bypasses remain
+
+### 6. Terminal Sessions Use Scoped Session Tokens
+- New API endpoint: `POST /api/agent/terminal-session-token` — agent requests a short-lived token before WebSocket connect
+- `WebSocketTerminalClient` sends `session_token` (not `agent_token`) in the WebSocket auth message
+- Falls back to `agent_token` if server doesn't support session tokens yet (graceful migration)
+- **Server must implement**: `POST /api/agent/terminal-session-token` — accept agent bearer token, return `{ session_token: "..." }` with 2-hour expiry. WebSocket handler must accept `session_token` in auth message.
+
+### 7. MSI Build Integrity — Hash Verification
+- New `build-manifest.json`: stores SHA256 hashes of published binaries (checked into source control)
+- New `build-and-verify.ps1`: publishes binaries, verifies hashes against manifest, builds MSI
+- Run `.\build-and-verify.ps1 -UpdateManifest` after intentional code changes to update hashes
+- MSI build fails with clear error if binary hashes don't match manifest
+
+### Files Changed
+| File | Change |
+|------|--------|
+| `Services/AgentUpdater.cs` | **Deleted** |
+| `Worker.cs` | Removed AgentUpdater field, constructor param, DI, update_agent case, pending update check |
+| `Program.cs` | Removed `AddSingleton<AgentUpdater>()` |
+| `Services/ApiClient.cs` | Removed `ReportUpdateResultAsync`, `DownloadFileAsync`; replaced response body debug log with structured log; added `RequestTerminalSessionTokenAsync` |
+| `Models/CheckInResponse.cs` | Removed `Version`, `DownloadUrl`, `FileHash` from `AgentCommand` |
+| `Services/ScriptExecutor.cs` | Extended `VerifyScriptSignature` to cover full payload; removed auth header from helper downloads; added domain allowlist |
+| `Services/WebSocketTerminalClient.cs` | Requests terminal session token; sends `session_token` instead of `agent_token` in WS auth |
+| `CbitAgent.Tray/TrayApiClient.cs` | Removed TLS bypass |
+| `build-manifest.json` | **New** — binary hash manifest |
+| `build-and-verify.ps1` | **New** — build + hash verification script |
+
+### Server-Side Changes Required (for CC Linux)
+1. **HMAC signing**: Update script signing to compute HMAC over canonical payload: `script_content\n[sorted_variables]\n[sorted_files]`
+2. **Helper file downloads**: Serve helper files without requiring auth header (use signed URLs or unauthenticated download endpoint)
+3. **Terminal session tokens**: Implement `POST /api/agent/terminal-session-token` — returns `{ session_token: "short-lived-jwt" }`. WebSocket handler must accept `session_token` in auth message alongside existing `agent_token` during migration.
+
+---
+
+## 2026-03-29: MSI Add/Remove Programs Icon
+
+Added Axis favicon.ico as the ARP (Add/Remove Programs) icon for the MSI installer.
+
+**Changes:**
+- `CbitAgent.Installer/Package.wxs` — Added `<Icon Id="AxisIcon.ico" SourceFile="favicon.ico" />`, `ARPPRODUCTICON`, and `ARPHELPLINK` properties
+- `CbitAgent.Installer/favicon.ico` — Icon file (4,286 bytes) placed by hand before build
+
+CBIT RMM Agent now shows the Axis icon in Windows Settings → Apps and Control Panel → Programs and Features, with a help link to https://axis.gocbit.com.
+
+---
+
+## 2026-03-29: ScreenConnect Session GUID Collection
+
+**Added** — Agent now reads the ScreenConnect **session GUID** (the `s=` parameter) from the service's registry `ImagePath`, instead of parsing the instance ID from the service name.
+
+**How it works:**
+1. Config field `screenconnect_instance_id` specifies which ScreenConnect instance to look up (default: `8646a2c674847db0`)
+2. Reads registry: `HKLM\SYSTEM\CurrentControlSet\Services\ScreenConnect Client ({instanceId})\ImagePath`
+3. Extracts the `s=` parameter (UUID format) from the ImagePath command-line arguments
+4. Sends as `screenconnect_guid` in check-in payload (string UUID or null)
+5. Server can deliver `screenconnect_instance_id` in check-in response to override the default
+
+**Files changed:**
+- `Configuration/AgentConfig.cs` — Added `screenconnect_instance_id` field
+- `Configuration/ConfigManager.cs` — Added `UpdateScreenConnectInstanceId()` method
+- `Models/CheckInResponse.cs` — Added `screenconnect_instance_id` field for server delivery
+- `Services/ScreenConnectDetector.cs` — Rewritten: reads registry ImagePath, extracts `s=` session GUID via regex
+- `Worker.cs` — Passes `config.ScreenConnectInstanceId` to detector; persists server-delivered instance ID
+
+**Check-in payload field:** `screenconnect_guid` (unchanged field name, now contains the session GUID instead of instance ID)
+
+---
+
+## 2026-03-23: TLS Bypass Removed from Tray App
+
+_(Superseded by Security Audit item #5 above — kept for historical reference)_
+
+---
+
 ## 2026-03-22: Network Adapter Collection Rewrite
 
 **Rewritten** — network adapter collection now reports ALL adapters (physical, virtual, VPN, Hyper-V, tunnel, loopback) with all bound IP addresses per adapter.

@@ -100,7 +100,6 @@ try
     builder.Services.AddSingleton<InstalledAppsCollector>();
     builder.Services.AddSingleton<PatchInfoCollector>();
     builder.Services.AddSingleton<ScreenConnectDetector>();
-    builder.Services.AddSingleton<AgentUpdater>();
     builder.Services.AddSingleton<WindowsUpdateExecutor>();
     builder.Services.AddSingleton<WebSocketTerminalClient>();
     builder.Services.AddSingleton<ScriptExecutor>();

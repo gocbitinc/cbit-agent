@@ -20,6 +20,11 @@
       </Directory>
     </StandardDirectory>
 
+    <!-- Add/Remove Programs branding -->
+    <Icon Id="AxisIcon.ico" SourceFile="favicon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AxisIcon.ico" />
+    <Property Id="ARPHELPLINK" Value="https://axis.gocbit.com" />
+
     <!-- Customer key property — server patches this value in the MSI Property table
          before download using Windows Installer COM API (no binary scanning needed).
          Default "CBIT_YOURKEY" is the placeholder; agent ignores it at startup. -->
