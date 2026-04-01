@@ -28,6 +28,12 @@ public class CheckInPayload
     [JsonPropertyName("screenconnect_guid")]
     public string? ScreenConnectGuid { get; set; }
 
+    /// <summary>
+    /// L2: Obsolete — agent no longer contacts third-party WAN IP services.
+    /// Server derives the endpoint's public IP from the inbound HTTP request.
+    /// Field retained for API compatibility; always null.
+    /// </summary>
+    [Obsolete("WAN IP collection removed. Server derives IP from inbound request.")]
     [JsonPropertyName("wan_ip")]
     public string? WanIp { get; set; }
 

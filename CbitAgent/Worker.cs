@@ -24,8 +24,9 @@ public class Worker : BackgroundService
     private readonly ServiceMonitor _serviceMonitor;
 
     private int _checkInCount;
-    private bool _scriptInProgress;
-    private bool _checkInRunning;
+    // L9: volatile ensures cross-thread visibility without locks (Task.Run sets these from a pool thread)
+    private volatile bool _scriptInProgress;
+    private volatile bool _checkInRunning;
     private const int AppsReportInterval = 12;   // Every 12th check-in (~1 hour at 5 min intervals)
     private const int PatchReportInterval = 12;   // Every 12th check-in
     private const int MaxRegistrationRetries = 10;
@@ -150,9 +151,26 @@ public class Worker : BackgroundService
             }
             catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized)
             {
-                _logger.LogWarning("Agent token rejected (401) — re-registering with customer key");
+                _logger.LogWarning("Agent token rejected (401) — clearing credentials and attempting re-registration");
                 _configManager.Config.AgentId = null;
                 _configManager.Config.AgentToken = null;
+                _configManager.Save(); // Persist cleared credentials — stale token must not survive restart
+
+                // Enrollment key is cleared after initial registration (H3). For re-registration
+                // the MSI must have been reinstalled to re-populate the registry value.
+                // Try reading from registry in case the agent was recently reinstalled.
+                if (string.IsNullOrEmpty(_configManager.Config.CustomerKey))
+                {
+                    if (!_configManager.TryRefreshCustomerKey())
+                    {
+                        _logger.LogError(
+                            "Re-registration required but enrollment key is not available — " +
+                            "reinstall the agent MSI to re-enroll");
+                        // No key available; RegisterAsync will fail gracefully below.
+                        // Loop continues so operators can observe repeated error logs.
+                    }
+                }
+
                 await RegisterAsync(stoppingToken);
             }
             catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
@@ -199,7 +217,10 @@ public class Worker : BackgroundService
         }
 
         _configManager.UpdateRegistration(response.AgentId, response.AgentToken,
-            response.CheckInIntervalMinutes, response.ScriptSigningSecret);
+            response.CheckInIntervalMinutes);
+        // H3: Enrollment key consumed — clear from config.json and registry.
+        // The agent now authenticates with agent_token; customer_key is no longer needed.
+        _configManager.ClearEnrollmentKey();
         _logger.LogInformation("Registration successful. Agent ID: {AgentId}", response.AgentId);
         return true;
     }
@@ -217,7 +238,7 @@ public class Worker : BackgroundService
         var disks = _diskInfoCollector.CollectDisks();
         var smartData = _diskInfoCollector.CollectSmartData();
         var screenConnectGuid = _screenConnectDetector.DetectGuid(config.ScreenConnectInstanceId);
-        var wanIp = await _networkInfoCollector.GetWanIpAsync(ct);
+        // L2: WAN IP removed — server derives from inbound HTTP request IP; no third-party leakage
 
         // Collect new telemetry data points — each in try/catch so failures are isolated
         var cpuUsage = _systemInfoCollector.CollectCpuUsage();
@@ -237,7 +258,7 @@ public class Worker : BackgroundService
             Disks = disks,
             SmartData = smartData,
             ScreenConnectGuid = screenConnectGuid,
-            WanIp = wanIp,
+            // L2: WanIp intentionally omitted — server uses inbound request IP
             CpuUsage = cpuUsage,
             RamUsage = ramUsage,
             PendingReboot = pendingReboot,
@@ -259,21 +280,48 @@ public class Worker : BackgroundService
         _logger.LogInformation("Check-in successful. Status: {Status}, Commands: {CommandCount}",
             response.Status, response.Commands.Count);
 
+        // Rotate agent token — server issues a fresh 24h JWT on every check-in
+        // and invalidates the previous one immediately. Persist before anything
+        // else so the next request (WS reconnect, alerts, etc.) uses the new token.
+        if (!string.IsNullOrEmpty(response.AgentToken))
+        {
+            config.AgentToken = response.AgentToken;
+            _configManager.Save();
+            _logger.LogDebug("Agent token rotated successfully");
+        }
+        else
+        {
+            _logger.LogWarning("Check-in response missing agent_token — token not rotated");
+        }
+
         // Update check-in interval if server says something different
         if (response.CheckInIntervalMinutes > 0 &&
             response.CheckInIntervalMinutes != config.CheckInIntervalMinutes)
         {
-            _logger.LogInformation("Updating check-in interval to {Interval} minutes",
-                response.CheckInIntervalMinutes);
-            config.CheckInIntervalMinutes = response.CheckInIntervalMinutes;
+            // L4: Clamp to 1-60 minutes — prevents server from driving agent into
+            // poll-storm (<1 min) or effectively disabling it (>60 min).
+            var clamped = Math.Clamp(response.CheckInIntervalMinutes, 1, 60);
+            if (clamped != response.CheckInIntervalMinutes)
+            {
+                _logger.LogWarning(
+                    "Server requested check-in interval of {Requested} minutes — outside allowed range [1,60], clamped to {Clamped}",
+                    response.CheckInIntervalMinutes, clamped);
+            }
+            _logger.LogInformation("Updating check-in interval to {Interval} minutes", clamped);
+            config.CheckInIntervalMinutes = clamped;
             _configManager.Save();
         }
 
-        // Refresh script signing secret if server provides one
-        _configManager.UpdateScriptSigningSecret(response.ScriptSigningSecret);
-
         // Update ScreenConnect instance ID if server provides one
-        _configManager.UpdateScreenConnectInstanceId(response.ScreenConnectInstanceId);
+        // L5: Validate format as 16-char hex before applying — prevents injection or confusion
+        var scInstanceId = response.ScreenConnectInstanceId;
+        if (!string.IsNullOrEmpty(scInstanceId) &&
+            !System.Text.RegularExpressions.Regex.IsMatch(scInstanceId, @"^[0-9a-fA-F]{16}$"))
+        {
+            _logger.LogWarning("Server returned invalid screenconnect_instance_id format — ignoring");
+            scInstanceId = null;
+        }
+        _configManager.UpdateScreenConnectInstanceId(scInstanceId);
 
         // Process commands
         await ProcessCommandsAsync(response.Commands, ct);

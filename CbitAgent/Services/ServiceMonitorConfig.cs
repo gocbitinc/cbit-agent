@@ -101,7 +101,14 @@ public class ServiceMonitorConfig
         }
 
         if (eventId != null && logName != null)
-            return new EventWatchEntry { EventId = eventId, LogName = logName };
+        {
+            // L3: Validate EventId as a positive integer before use in XPath.
+            // Raw string interpolation into XPath query would allow injection otherwise.
+            if (!int.TryParse(eventId, out var eventIdInt) || eventIdInt <= 0)
+                return null; // rejected — invalid EventId
+
+            return new EventWatchEntry { EventId = eventIdInt.ToString(), LogName = logName };
+        }
 
         return null;
     }

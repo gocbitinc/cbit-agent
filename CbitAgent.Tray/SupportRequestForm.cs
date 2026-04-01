@@ -3,7 +3,9 @@ namespace CbitAgent.Tray;
 public class SupportRequestForm : Form
 {
     private readonly TrayApiClient _apiClient;
-    private readonly Bitmap? _screenshot;
+    // L12: No screenshot captured at construction time — deferred until user opts in via checkbox.
+    // _capturedScreenshot holds the bitmap once captured; disposed on uncheck.
+    private Bitmap? _capturedScreenshot;
 
     private TextBox _emailBox = null!;
     private TextBox _descriptionBox = null!;
@@ -14,12 +16,11 @@ public class SupportRequestForm : Form
     private Button _cancelButton = null!;
     private Label _statusLabel = null!;
 
-    public SupportRequestForm(TrayApiClient apiClient, Bitmap? screenshot)
+    public SupportRequestForm(TrayApiClient apiClient)
     {
         _apiClient = apiClient;
-        _screenshot = screenshot;
         InitializeComponents();
-        UpdateThumbnail();
+        // Thumbnail starts empty — checkbox is unchecked, no screenshot taken yet
     }
 
     private void InitializeComponents()
@@ -70,15 +71,15 @@ public class SupportRequestForm : Form
         };
         Controls.Add(_descriptionBox);
 
-        // Screenshot checkbox
+        // Screenshot checkbox — L12: starts unchecked; screenshot captured on first check
         _includeScreenshotCheck = new CheckBox
         {
             Text = "Include screenshot",
             Location = new Point(12, 192),
-            Checked = true,
+            Checked = false,
             AutoSize = true
         };
-        _includeScreenshotCheck.CheckedChanged += (_, _) => UpdateThumbnail();
+        _includeScreenshotCheck.CheckedChanged += OnScreenshotCheckChanged;
         Controls.Add(_includeScreenshotCheck);
 
         // Capture new screenshot button
@@ -136,15 +137,52 @@ public class SupportRequestForm : Form
         CancelButton = _cancelButton;
     }
 
+    /// <summary>
+    /// L12: Called when the "Include screenshot" checkbox changes state.
+    /// On check: capture a fresh screenshot immediately (form is still visible — user sees it in preview).
+    /// On uncheck: dispose the captured screenshot and clear the thumbnail.
+    /// </summary>
+    private void OnScreenshotCheckChanged(object? sender, EventArgs e)
+    {
+        if (_includeScreenshotCheck.Checked)
+        {
+            // Capture screenshot now — form is visible but that's expected (user just opted in)
+            var capture = ScreenshotCapture.CaptureFullScreen();
+            if (capture != null)
+            {
+                _capturedScreenshot?.Dispose();
+                _capturedScreenshot = capture;
+                UpdateThumbnail();
+            }
+            else
+            {
+                // Capture failed — revert checkbox
+                _includeScreenshotCheck.Checked = false;
+                MessageBox.Show("Could not capture screenshot.", "Screenshot",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+        else
+        {
+            // User opted out — dispose and clear
+            _capturedScreenshot?.Dispose();
+            _capturedScreenshot = null;
+            _thumbnailBox.Image?.Dispose();
+            _thumbnailBox.Image = null;
+            _thumbnailBox.Tag = null;
+        }
+    }
+
     private void UpdateThumbnail()
     {
         _thumbnailBox.Image?.Dispose();
         _thumbnailBox.Image = null;
 
-        if (_includeScreenshotCheck.Checked && _screenshot != null)
+        var bmp = (_thumbnailBox.Tag as Bitmap) ?? _capturedScreenshot;
+        if (_includeScreenshotCheck.Checked && bmp != null)
         {
             _thumbnailBox.Image = ScreenshotCapture.CreateThumbnail(
-                _screenshot, _thumbnailBox.Width - 4, _thumbnailBox.Height - 4);
+                bmp, _thumbnailBox.Width - 4, _thumbnailBox.Height - 4);
         }
     }
 
@@ -160,12 +198,15 @@ public class SupportRequestForm : Form
 
         if (newCapture != null)
         {
-            // Replace the screenshot - we can't reassign _screenshot (readonly),
-            // but we can update the thumbnail from the new capture
+            _capturedScreenshot?.Dispose();
+            _capturedScreenshot = newCapture;
+            // Also clear any re-capture stored in Tag
+            (_thumbnailBox.Tag as Bitmap)?.Dispose();
+            _thumbnailBox.Tag = null;
+
             _thumbnailBox.Image?.Dispose();
             _thumbnailBox.Image = ScreenshotCapture.CreateThumbnail(
                 newCapture, _thumbnailBox.Width - 4, _thumbnailBox.Height - 4);
-            _thumbnailBox.Tag = newCapture; // Store for submit
         }
     }
 
@@ -190,8 +231,8 @@ public class SupportRequestForm : Form
             byte[]? screenshotBytes = null;
             if (_includeScreenshotCheck.Checked)
             {
-                // Use re-captured screenshot if available, otherwise original
-                var bmp = (_thumbnailBox.Tag as Bitmap) ?? _screenshot;
+                // Use re-captured screenshot if available, otherwise the checkbox-captured one
+                var bmp = (_thumbnailBox.Tag as Bitmap) ?? _capturedScreenshot;
                 if (bmp != null)
                     screenshotBytes = ScreenshotCapture.ToBytes(bmp);
             }
@@ -244,6 +285,7 @@ public class SupportRequestForm : Form
         {
             _thumbnailBox.Image?.Dispose();
             (_thumbnailBox.Tag as Bitmap)?.Dispose();
+            _capturedScreenshot?.Dispose();
         }
         base.Dispose(disposing);
     }

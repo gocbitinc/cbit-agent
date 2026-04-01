@@ -151,10 +151,8 @@ public class TrayApplicationContext : ApplicationContext
             return;
         }
 
-        // Capture screenshot BEFORE the form appears
-        var screenshot = ScreenshotCapture.CaptureFullScreen();
-
-        using var form = new SupportRequestForm(_apiClient, screenshot);
+        // L12: Screenshot no longer pre-captured here — deferred until user opts in via checkbox in the form
+        using var form = new SupportRequestForm(_apiClient);
         form.ShowDialog();
     }
 

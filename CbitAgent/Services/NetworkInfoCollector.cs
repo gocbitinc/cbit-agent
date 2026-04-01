@@ -10,10 +10,6 @@ namespace CbitAgent.Services;
 public class NetworkInfoCollector
 {
     private readonly ILogger<NetworkInfoCollector> _logger;
-    private string? _cachedWanIp;
-    private DateTime _wanIpCacheTime = DateTime.MinValue;
-    private static readonly TimeSpan WanIpCacheLifetime = TimeSpan.FromMinutes(5);
-    private static readonly HttpClient WanIpClient = new() { Timeout = TimeSpan.FromSeconds(5) };
 
     public NetworkInfoCollector(ILogger<NetworkInfoCollector> logger)
     {
@@ -140,38 +136,6 @@ public class NetworkInfoCollector
         var bytes = mac.GetAddressBytes();
         if (bytes.Length == 0) return string.Empty;
         return string.Join(":", bytes.Select(b => b.ToString("X2")));
-    }
-
-    public async Task<string?> GetWanIpAsync(CancellationToken ct = default)
-    {
-        if (_cachedWanIp != null && DateTime.UtcNow - _wanIpCacheTime < WanIpCacheLifetime)
-        {
-            return _cachedWanIp;
-        }
-
-        var endpoints = new[] { "https://api.ipify.org", "https://ifconfig.me/ip", "https://icanhazip.com" };
-
-        foreach (var endpoint in endpoints)
-        {
-            try
-            {
-                var ip = (await WanIpClient.GetStringAsync(endpoint, ct)).Trim();
-                if (!string.IsNullOrEmpty(ip) && ip.Length <= 45)
-                {
-                    _cachedWanIp = ip;
-                    _wanIpCacheTime = DateTime.UtcNow;
-                    _logger.LogDebug("WAN IP: {Ip}", ip);
-                    return ip;
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Failed to get WAN IP from {Endpoint}", endpoint);
-            }
-        }
-
-        _logger.LogWarning("Could not determine WAN IP from any endpoint");
-        return _cachedWanIp; // return stale cache if available
     }
 
     private WifiInfo? GetWifiDetails()

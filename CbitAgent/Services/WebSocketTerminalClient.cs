@@ -29,6 +29,11 @@ public class WebSocketTerminalClient : IDisposable
     private const int MaxBackoffSeconds = 60;
     private const int ReceiveBufferSize = 8192;
 
+    // Terminal session lifecycle limits (M1 + L8)
+    private static readonly TimeSpan MaxSessionAge = TimeSpan.FromHours(4);           // L8: hard ceiling — 2× server token expiry
+    private static readonly TimeSpan InactivityDisconnectTimeout = TimeSpan.FromMinutes(10); // M1: orphan window while WS is down
+    private static readonly TimeSpan WatchdogInterval = TimeSpan.FromSeconds(60);     // how often the watchdog checks
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNameCaseInsensitive = true
@@ -56,6 +61,11 @@ public class WebSocketTerminalClient : IDisposable
     public async Task RunAsync(CancellationToken stoppingToken)
     {
         int attempt = 0;
+
+        // Start the session watchdog for the lifetime of the service.
+        // Runs independently of the reconnect loop — enforces inactivity (M1)
+        // and max age (L8) limits regardless of WebSocket connection state.
+        var watchdogTask = Task.Run(() => SessionWatchdogAsync(stoppingToken), stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -98,6 +108,9 @@ public class WebSocketTerminalClient : IDisposable
         }
         _sessions.Clear();
 
+        // Wait for the watchdog to exit cleanly (it exits when stoppingToken fires)
+        try { await watchdogTask; } catch (OperationCanceledException) { } catch (Exception) { }
+
         _logger.LogInformation("WebSocket terminal client stopped");
     }
 
@@ -123,12 +136,17 @@ public class WebSocketTerminalClient : IDisposable
 
         _logger.LogInformation("WebSocket connecting to {Url}...", $"{wsUrl}/api/agent/ws");
 
-        // Request a scoped terminal session token before connecting
+        // Request a scoped terminal session token before connecting.
+        // The agent_token MUST NOT be used as a fallback — it is a long-lived credential
+        // that would grant broader access if leaked via the WebSocket channel.
         var sessionToken = await _apiClient.RequestTerminalSessionTokenAsync(stoppingToken);
         if (string.IsNullOrEmpty(sessionToken))
         {
-            _logger.LogWarning("Failed to obtain terminal session token, falling back to agent token");
-            sessionToken = config.AgentToken;
+            _logger.LogError(
+                "Terminal session token unavailable — aborting WebSocket connection. " +
+                "Will retry on next reconnect cycle. " +
+                "Check that the server supports POST /api/agent/terminal-session-token.");
+            throw new InvalidOperationException("Terminal session token unavailable — cannot open WebSocket without scoped token");
         }
 
         await _ws.ConnectAsync(uri, stoppingToken);
@@ -667,6 +685,64 @@ public class WebSocketTerminalClient : IDisposable
         finally
         {
             _sendLock.Release();
+        }
+    }
+
+    // ─── Session watchdog ─────────────────────────────────────────────
+
+    /// <summary>
+    /// Background task that runs every 60 seconds for the lifetime of the service.
+    /// Enforces two session lifetime limits:
+    ///   M1 — Inactivity while disconnected: if the WebSocket is not open and a session
+    ///        has had no activity for 10 minutes, it is disposed (orphan cleanup).
+    ///   L8 — Maximum session age: sessions older than 4 hours are disposed regardless
+    ///        of activity or connection state (hard ceiling; 2× the server token expiry).
+    /// Uses TryRemove before Dispose to prevent double-disposal.
+    /// </summary>
+    private async Task SessionWatchdogAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(WatchdogInterval, stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
+            var now = DateTime.UtcNow;
+            var wsConnected = _ws?.State == WebSocketState.Open;
+
+            foreach (var kvp in _sessions)
+            {
+                var sessionId = kvp.Key;
+                var session = kvp.Value;
+
+                // L8: Hard max age — dispose regardless of activity or connection state
+                var age = now - session.StartedAtUtc;
+                if (age > MaxSessionAge)
+                {
+                    _logger.LogWarning(
+                        "Terminal session {SessionId} disposed after maximum session age exceeded ({Age:N0} minutes)",
+                        sessionId, age.TotalMinutes);
+                    if (_sessions.TryRemove(sessionId, out var aged))
+                        aged.Dispose();
+                    continue;
+                }
+
+                // M1: Inactivity while disconnected — dispose orphaned sessions
+                var idle = now - session.LastActivityUtc;
+                if (!wsConnected && idle > InactivityDisconnectTimeout)
+                {
+                    _logger.LogInformation(
+                        "Terminal session {SessionId} disposed after {Minutes:N0} minutes of inactivity while disconnected",
+                        sessionId, idle.TotalMinutes);
+                    if (_sessions.TryRemove(sessionId, out var orphaned))
+                        orphaned.Dispose();
+                }
+            }
         }
     }
 

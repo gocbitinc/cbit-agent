@@ -18,10 +18,10 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 ## Architecture
 - .NET 8 Worker Service, self-contained single-file publish for win-x64 (~68 MB)
 - .NET 8 WinForms tray app, self-contained single-file publish for win-x64 (~155 MB)
-- config.json next to exe: server_url, customer_key, agent_id, agent_token, screenconnect_instance_id
+- config.json next to exe: server_url, customer_key, agent_id, agent_token, screenconnect_instance_id, signing_public_key
 - Server API base: https://axis.gocbit.com/api/agent/
 - WebSocket: wss://axis.gocbit.com/api/agent/ws
-- Auth: agent_token JWT in Authorization header for HTTP; WebSocket auth sends `{type: "auth", session_token, agent_id}` using a scoped terminal session token (falls back to agent_token if server doesn't support session tokens yet)
+- Auth: agent_token JWT in Authorization header for HTTP; WebSocket auth sends `{type: "auth", session_token, agent_id}` using a scoped terminal session token — NO fallback to agent_token; WebSocket is unavailable if session token endpoint is down
 
 ## Repository
 - GitHub: https://github.com/gocbitinc/cbit-agent.git
@@ -46,7 +46,7 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 - Services/PatchInfoCollector.cs — WMI + WUApiLib
 - Services/ScreenConnectDetector.cs — registry ImagePath parse for session GUID (s= parameter)
 - Services/WebSocketTerminalClient.cs — terminal relay + WU command routing + install_kb + reboot + scoped session token auth
-- Services/TerminalSession.cs — PowerShell process with raw byte I/O (CMD removed)
+- Services/TerminalSession.cs — PowerShell process with raw byte I/O (CMD removed); tracks StartedAtUtc and LastActivityUtc for watchdog
 - Services/WindowsUpdateExecutor.cs — WUApiLib COM: scan, install, policy filter, reboot check
 - Models/TerminalMessages.cs — WsMessage/WsOutMessage (terminal + WU fields)
 - Services/ScriptExecutor.cs — PowerShell script execution: file download, variable injection, process spawn, timeout, result reporting
@@ -89,12 +89,15 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 - No binary patching — Property table is always uncompressed OLE structured storage
 - Server-side patching: `UPDATE Property SET Value='real-key' WHERE Property='CUSTOMER_KEY'`
 - Install with key: `msiexec /i CbitAgent.Installer.msi CUSTOMER_KEY=<key>`
+- Same mechanism for `SIGNING_PUBLIC_KEY` — PEM value with `\n` literals, patched into Property table
+- MSI writes `[SIGNING_PUBLIC_KEY]` to registry: `HKLM\SOFTWARE\CBIT\Agent\SigningPublicKey`
+- Placeholder value `NONE` is ignored (treated as empty)
 
 ## MSI Behavior
 - Installs to C:\Program Files\CBIT\Agent\
 - Registers and starts CbitRmmAgent Windows Service (auto-start, LocalSystem)
 - Adds HKLM Run key for CbitAgent.Tray.exe (auto-start for all users)
-- Writes CUSTOMER_KEY property to registry (HKLM\SOFTWARE\CBIT\Agent\CustomerKey)
+- Writes CUSTOMER_KEY and SIGNING_PUBLIC_KEY properties to registry (HKLM\SOFTWARE\CBIT\Agent)
 - Post-install custom action launches CbitAgent.Tray.exe as logged-in user (no reboot needed)
 - On uninstall: early custom actions (before InstallValidate) force-kill CbitAgent.Tray.exe and CbitAgent.exe via taskkill, stop/delete service via sc.exe — prevents "files in use" prompt and hanging
 - Creates `logs\` subdirectory at install time for agent log files
@@ -120,9 +123,10 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 ## Scripting Engine
 - Server delivers PowerShell scripts via `pending_script` in heartbeat response
 - One script at a time (`_scriptInProgress` guard), queued scripts re-sent next heartbeat
-- **HMAC-SHA256 signature verification**: every script must include `script_signature` (lowercase hex HMAC-SHA256 over canonical payload: `script_content\n[sorted_variables]\n[sorted_files]`). Agent verifies using `script_signing_secret` from config.json (delivered at registration, refreshed every check-in). Uses `CryptographicOperations.FixedTimeEquals` (timing-attack safe). Rejects ALL scripts if secret missing, signature missing, or mismatch.
+- **RSA-PSS SHA-256 signature verification**: every script must include `script_signature` (base64-encoded RSA-PSS signature over canonical payload: `script_content\n[sorted_variables]\n[sorted_files]`). Agent verifies using `signing_public_key` PEM from config.json (embedded in MSI by server, read from registry on first run). Rejects ALL scripts if public key missing, signature missing, or verification fails.
 - Variable injection: replaces `{{Key}}` in script content before execution
 - Helper files: downloaded without auth header; restricted to `axis.gocbit.com` domain only (external URLs rejected)
+- **Helper file integrity**: each `ScriptFile` must have `file_hash` (SHA-256 hex) in the signed payload. Agent downloads to memory, verifies hash, only writes to disk on match. Missing hash → script rejected. Filename validated via `Path.GetFileName()` before `Path.Combine` — path traversal blocked.
 - Files downloaded to temp working directory (`axis-script-{executionId}`)
 - PowerShell: `-NoProfile -NonInteractive -ExecutionPolicy Bypass -File`
 - Timeout: `Kill(entireProcessTree: true)` after `timeout_seconds`
@@ -152,29 +156,34 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 - Format: `2026-03-21 14:23:01 [INF] CbitAgent.Worker: Check-in successful`
 - NuGet: Serilog.Extensions.Hosting, Serilog.Sinks.File, Serilog.Sinks.Console, Serilog.Sinks.EventLog
 
-## Security Hardening (2026-03-22, audit 2026-03-23)
+## Security Hardening (2026-03-22, audit 2026-03-23, batches 1–4 through 2026-03-31)
 - Auto-update removed permanently — updates delivered via Axis PowerShell scripts
-- TLS: Strict certificate validation across all projects (agent service, tray app). No bypass path in code.
+- TLS: Strict certificate validation; TLS 1.2/1.3 floor via `HttpClientHandler.SslProtocols` (no TLS 1.0/1.1)
 - config.json ACL: Restricted to SYSTEM + Administrators on every write and on startup (disables inheritance).
 - Registry ACL: `HKLM\SOFTWARE\CBIT\Agent` restricted to SYSTEM + Administrators on startup.
-- HMAC signing: covers full script payload (content + variables + helper files), not just script_content
-- Helper files: agent token never sent to download URLs; domain restricted to axis.gocbit.com
+- Script signing: RSA-PSS SHA-256 with per-customer asymmetric keys (public key embedded in MSI, no shared secret). PSS salt = 32 bytes (hash length). Public key validated via RSA import at load time — cleared if malformed.
+- Helper files: agent token never sent to download URLs; domain restricted to axis.gocbit.com; SHA-256 content hash verified before writing to disk
 - Debug logging: no response bodies, tokens, secrets, or credentials logged at any level
-- WebSocket auth: scoped session token sent in message body as `{type: "auth", session_token, agent_id}`. No token in URL.
+- WebSocket auth: scoped session token sent in message body as `{type: "auth", session_token, agent_id}`. No token in URL. No fallback.
 - MSI build integrity: `build-and-verify.ps1` verifies binary SHA256 hashes against `build-manifest.json` before packaging
 - 401 re-registration: Agent clears token and re-registers when server returns 401 Unauthorized.
+- JWT rotation: Server issues a fresh 24h agent_token on every successful check-in. Agent persists it atomically before processing any other response fields. ApiClient reads token from config on each request — no caching.
+- WAN IP removed: no third-party IP service calls; server derives from inbound request
+- Check-in interval clamped [1,60] min; ScreenConnect ID validated as ^[0-9a-fA-F]{16}$; EventId validated as positive integer before XPath use
+- Exception messages sanitized (paths → [path], ≤512 chars) before server transmission
+- Screenshot in support form: captured only on explicit user opt-in (checkbox starts unchecked)
 
 ## Production Readiness (2026-03-22)
 - Service recovery: Windows service auto-restarts on failure (30s delay, 3 retries, 1-day reset)
 - Startup: logs agent version, OS, .NET runtime; validates server_url is HTTPS; registration retries with backoff
 - Unhandled exceptions: `AppDomain.UnhandledException` writes to `logs/fatal.log`; `TaskScheduler.UnobservedTaskException` logged and observed
-- HttpClient: shared static instances in ScriptExecutor and NetworkInfoCollector (prevents socket exhaustion)
+- HttpClient: shared static instances in ScriptExecutor (NetworkInfoCollector WanIpClient removed — L2)
 - Input validation: script timeout capped at 3600s, execution_id path traversal blocked, service names validated
 - Log directory: ACL restricted to SYSTEM + Administrators Full Control with ContainerInherit + ObjectInherit (child log files inherit). ACL failure logs to `fatal.log` instead of silently swallowing.
 - Check-in overlap guard: skips cycle if previous check-in is still running
 
 ## Known Issues
-- WebSocket server must accept auth-by-message with `session_token` — agent requests scoped token via `POST /api/agent/terminal-session-token`, falls back to agent_token if endpoint not implemented yet
+- WebSocket server MUST implement `POST /api/agent/terminal-session-token` — agent has no fallback; WebSocket terminal is fully unavailable until this endpoint is deployed
 - Server must update HMAC signing to cover full canonical payload (see PROGRESS.md)
 - Server must serve helper files without auth header (or use signed URLs)
 - Support request endpoint /api/agent/support-request needs server-side implementation

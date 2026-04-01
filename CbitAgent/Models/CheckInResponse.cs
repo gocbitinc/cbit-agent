@@ -16,11 +16,16 @@ public class CheckInResponse
     [JsonPropertyName("pending_script")]
     public PendingScript? PendingScript { get; set; }
 
-    [JsonPropertyName("script_signing_secret")]
-    public string? ScriptSigningSecret { get; set; }
-
     [JsonPropertyName("screenconnect_instance_id")]
     public string? ScreenConnectInstanceId { get; set; }
+
+    /// <summary>
+    /// Rotated agent JWT issued by the server on every successful check-in.
+    /// The old token is invalidated server-side immediately. Agent must persist
+    /// this atomically before the next check-in cycle.
+    /// </summary>
+    [JsonPropertyName("agent_token")]
+    public string? AgentToken { get; set; }
 }
 
 public class AgentCommand
@@ -51,7 +56,4 @@ public class RegisterResponse
 
     [JsonPropertyName("check_in_interval_minutes")]
     public int CheckInIntervalMinutes { get; set; } = 5;
-
-    [JsonPropertyName("script_signing_secret")]
-    public string? ScriptSigningSecret { get; set; }
 }

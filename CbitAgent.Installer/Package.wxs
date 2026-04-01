@@ -30,10 +30,15 @@
          Default "CBIT_YOURKEY" is the placeholder; agent ignores it at startup. -->
     <Property Id="CUSTOMER_KEY" Value="CBIT_YOURKEY" Secure="yes" />
 
+    <!-- Signing public key — server patches this PEM value in the MSI Property table
+         before download (same mechanism as CUSTOMER_KEY). -->
+    <Property Id="SIGNING_PUBLIC_KEY" Value="NONE" Secure="yes" />
+
     <Feature Id="MainFeature" Title="CBIT RMM Agent" Level="1">
       <ComponentRef Id="CbitAgentExe" />
       <ComponentRef Id="CbitTrayExe" />
       <ComponentRef Id="CustomerKeyReg" />
+      <ComponentRef Id="SigningPublicKeyReg" />
       <ComponentRef Id="LogsFolder" />
       <ComponentRef Id="CleanupOnUninstall" />
     </Feature>

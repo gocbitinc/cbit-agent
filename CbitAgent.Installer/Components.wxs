@@ -71,6 +71,22 @@
     </Component>
   </Fragment>
 
+  <!-- Write signing public key from MSI property to registry — agent reads this at startup
+       if config.json doesn't have a signing_public_key yet. Server patches the SIGNING_PUBLIC_KEY
+       Property in the MSI database before download (same mechanism as CUSTOMER_KEY). -->
+  <Fragment>
+    <Component Id="SigningPublicKeyReg" Directory="INSTALLFOLDER"
+               Guid="F6A7B8C9-D0E1-2345-FABC-456789012345" Bitness="always64">
+
+      <RegistryValue Root="HKLM"
+                     Key="SOFTWARE\CBIT\Agent"
+                     Name="SigningPublicKey"
+                     Type="string"
+                     Value="[SIGNING_PUBLIC_KEY]"
+                     KeyPath="yes" />
+    </Component>
+  </Fragment>
+
   <!-- Create logs directory at install time -->
   <Fragment>
     <Component Id="LogsFolder" Directory="LOGSFOLDER"

@@ -30,6 +30,15 @@ public class ScriptFile
 
     [JsonPropertyName("download_url")]
     public string DownloadUrl { get; set; } = string.Empty;
+
+    /// <summary>
+    /// SHA-256 hex digest of the file content, included in the RSA-PSS signed payload.
+    /// Agent verifies downloaded bytes against this hash before writing to disk.
+    /// Server MUST include this field for every helper file — scripts without it are rejected.
+    /// TODO (server): include file_hash (SHA-256 hex) per helper file in signed payload — see MEMORY.md
+    /// </summary>
+    [JsonPropertyName("file_hash")]
+    public string? FileHash { get; set; }
 }
 
 public class PowerShellResult

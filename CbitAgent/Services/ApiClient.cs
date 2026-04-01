@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Security.Authentication;
 using System.Text;
 using System.Text.Json;
 using CbitAgent.Configuration;
@@ -24,7 +25,12 @@ public class ApiClient
         _configManager = configManager;
         _logger = logger;
 
-        _httpClient = new HttpClient()
+        // L1: Enforce TLS 1.2+ floor — reject TLS 1.0/1.1 and older protocols
+        var handler = new HttpClientHandler
+        {
+            SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
+        };
+        _httpClient = new HttpClient(handler)
         {
             Timeout = TimeSpan.FromSeconds(30)
         };

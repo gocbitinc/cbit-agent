@@ -37,9 +37,9 @@ public class ScriptExecutor
             return;
         }
 
-        // Verify HMAC-SHA256 signature before any execution (covers full payload)
-        var signingSecret = _configManager.Config.ScriptSigningSecret;
-        if (!VerifyScriptSignature(script, signingSecret))
+        // Verify RSA-PSS SHA-256 signature before any execution (covers full payload)
+        var signingPublicKey = _configManager.Config.SigningPublicKey;
+        if (!VerifyScriptSignature(script, signingPublicKey))
         {
             _logger.LogError("Script execution {ExecutionId}: signature verification failed, aborting", executionId);
             await ReportResultAsync(executionId, new ScriptResult
@@ -81,10 +81,42 @@ public class ScriptExecutor
             {
                 foreach (var file in script.Files)
                 {
-                    var filePath = Path.Combine(workDir, file.Filename);
+                    // H1: Validate filename — prevent path traversal and dangerous names.
+                    // Path.GetFileName strips any directory prefix; if the result differs
+                    // from the original, the name contained path separators — reject it.
+                    var safeFilename = ValidateHelperFilename(file.Filename, executionId);
+                    if (safeFilename == null)
+                    {
+                        await ReportResultAsync(executionId, new ScriptResult
+                        {
+                            Status = "error", ExitCode = -1, Stdout = "",
+                            Stderr = "Helper file rejected: invalid filename",
+                            StartedAt = DateTime.UtcNow, CompletedAt = DateTime.UtcNow
+                        });
+                        return;
+                    }
+
+                    // H2: Require SHA-256 content hash in the signed payload.
+                    // The hash is part of the RSA-PSS-signed canonical payload, so a missing
+                    // or mismatched hash means the file content was not committed to by the signer.
+                    if (string.IsNullOrEmpty(file.FileHash))
+                    {
+                        _logger.LogError(
+                            "Script execution {ExecutionId}: helper file '{Filename}' has no hash in signed payload — rejecting",
+                            executionId, safeFilename);
+                        await ReportResultAsync(executionId, new ScriptResult
+                        {
+                            Status = "error", ExitCode = -1, Stdout = "",
+                            Stderr = "Helper file hash not present in signed payload — rejecting",
+                            StartedAt = DateTime.UtcNow, CompletedAt = DateTime.UtcNow
+                        });
+                        return;
+                    }
+
+                    var filePath = Path.Combine(workDir, safeFilename);
                     _logger.LogInformation("Downloading file {Filename} for execution {ExecutionId}",
-                        file.Filename, executionId);
-                    await DownloadFileAsync(file.DownloadUrl, filePath);
+                        safeFilename, executionId);
+                    await DownloadAndVerifyFileAsync(file.DownloadUrl, filePath, file.FileHash, safeFilename);
                 }
             }
 
@@ -136,7 +168,8 @@ public class ScriptExecutor
                 Status = "error",
                 ExitCode = -1,
                 Stdout = "",
-                Stderr = $"Agent execution error: {ex.Message}",
+                // L11: Sanitize before sending — strip filesystem paths, truncate to 512 chars
+                Stderr = $"Agent execution error: {SanitizeErrorMessage(ex.Message)}",
                 StartedAt = DateTime.UtcNow,
                 CompletedAt = DateTime.UtcNow
             });
@@ -197,7 +230,15 @@ public class ScriptExecutor
         {
             timedOut = true;
             _logger.LogWarning("Script timed out after {Timeout}s, killing process tree", timeoutSeconds);
-            try { process.Kill(entireProcessTree: true); } catch { }
+            try
+            {
+                process.Kill(entireProcessTree: true);
+                // L10: Wait up to 5 seconds for the process tree to fully exit after Kill().
+                // Without this, the process may still hold file handles when we delete workDir.
+                await process.WaitForExitAsync(CancellationToken.None)
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch { }
         }
 
         return new PowerShellResult
@@ -217,13 +258,58 @@ public class ScriptExecutor
         "axis.gocbit.com"
     };
 
-    private async Task DownloadFileAsync(string url, string destinationPath)
+    /// <summary>
+    /// Validates a server-supplied helper file filename to prevent path traversal.
+    /// Returns the sanitized filename if valid, or null (and logs a security warning) if rejected.
+    /// Rules: must equal Path.GetFileName() of itself (no directory components),
+    /// must not be empty, start with '.', or contain dangerous characters.
+    /// </summary>
+    private string? ValidateHelperFilename(string rawFilename, string executionId)
+    {
+        if (string.IsNullOrEmpty(rawFilename))
+        {
+            _logger.LogError(
+                "Script execution {ExecutionId}: helper file has empty filename — rejecting",
+                executionId);
+            return null;
+        }
+
+        // Path.GetFileName strips directory prefixes. If the result differs from the
+        // original, the name contained path separators (\, /) — clear path traversal attempt.
+        var leaf = Path.GetFileName(rawFilename);
+        if (string.IsNullOrEmpty(leaf) || leaf != rawFilename)
+        {
+            _logger.LogError(
+                "Script execution {ExecutionId}: helper file filename contains path components — rejecting: {Raw}",
+                executionId, rawFilename);
+            return null;
+        }
+
+        // Reject dot-files, double-dot traversal, and Windows-dangerous characters
+        if (leaf.StartsWith('.') ||
+            leaf.Contains("..") ||
+            leaf.IndexOfAny(new[] { ':', '*', '?', '"', '<', '>', '|' }) >= 0)
+        {
+            _logger.LogError(
+                "Script execution {ExecutionId}: helper file filename contains dangerous characters — rejecting: {Filename}",
+                executionId, leaf);
+            return null;
+        }
+
+        return leaf;
+    }
+
+    /// <summary>
+    /// Downloads a helper file from a trusted domain, verifies its SHA-256 content hash
+    /// against the value committed to in the signed payload, then writes it to disk.
+    /// The file is never written to disk if the hash does not match.
+    /// </summary>
+    private async Task DownloadAndVerifyFileAsync(string url, string destinationPath,
+        string expectedHashHex, string filename)
     {
         // Validate URL domain — only allow downloads from trusted domains
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
-        {
-            throw new InvalidOperationException($"Helper file URL is not a valid absolute URL");
-        }
+            throw new InvalidOperationException("Helper file URL is not a valid absolute URL");
 
         if (!AllowedDownloadDomains.Contains(uri.Host))
         {
@@ -233,11 +319,26 @@ public class ScriptExecutor
 
         // No Authorization header — helper file downloads are unauthenticated
         var request = new HttpRequestMessage(HttpMethod.Get, url);
-
-        using var response = await SharedHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+        using var response = await SharedHttpClient.SendAsync(request, HttpCompletionOption.ResponseContentRead);
         response.EnsureSuccessStatusCode();
-        await using var fileStream = File.Create(destinationPath);
-        await response.Content.CopyToAsync(fileStream);
+
+        // Download to memory so we can hash before touching disk
+        var fileBytes = await response.Content.ReadAsByteArrayAsync();
+
+        // H2: Verify SHA-256 content hash against the value in the signed payload.
+        // Convert.ToHexString returns uppercase; compare case-insensitively.
+        var actualHashHex = Convert.ToHexString(SHA256.HashData(fileBytes));
+        if (!string.Equals(actualHashHex, expectedHashHex, StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogError(
+                "Helper file integrity check failed for '{Filename}': expected {Expected}, got {Actual} — rejecting",
+                filename, expectedHashHex.ToLowerInvariant(), actualHashHex.ToLowerInvariant());
+            throw new InvalidOperationException(
+                $"Helper file integrity check failed for {filename} — rejecting");
+        }
+
+        // Hash verified — safe to write to disk
+        await File.WriteAllBytesAsync(destinationPath, fileBytes);
     }
 
     private async Task ReportResultAsync(string executionId, ScriptResult result)
@@ -254,6 +355,34 @@ public class ScriptExecutor
         }
     }
 
+    /// <summary>
+    /// L11: Sanitize exception messages before transmitting them to the server.
+    /// Replaces Windows filesystem paths with [path] and truncates to 512 characters
+    /// to avoid leaking directory structure or sensitive path components.
+    /// </summary>
+    private static string SanitizeErrorMessage(string? message)
+    {
+        if (string.IsNullOrEmpty(message)) return string.Empty;
+
+        // Replace absolute Windows paths (e.g. C:\Users\admin\AppData\...)
+        var sanitized = System.Text.RegularExpressions.Regex.Replace(
+            message,
+            @"[A-Za-z]:\\(?:[^\\/:\*\?""<>\|\r\n]+\\)*[^\\/:\*\?""<>\|\r\n]*",
+            "[path]");
+
+        // Replace UNC paths (\\server\share\...)
+        sanitized = System.Text.RegularExpressions.Regex.Replace(
+            sanitized,
+            @"\\\\[^\\/\r\n]+(?:\\[^\\/\r\n]+)*",
+            "[path]");
+
+        // Truncate to 512 characters
+        if (sanitized.Length > 512)
+            sanitized = sanitized[..512];
+
+        return sanitized;
+    }
+
     private static string Truncate(string value, int maxLength)
     {
         if (string.IsNullOrEmpty(value) || value.Length <= maxLength)
@@ -262,18 +391,19 @@ public class ScriptExecutor
     }
 
     /// <summary>
-    /// Verifies HMAC-SHA256 signature over the full script payload:
+    /// Verifies RSA-PSS SHA-256 signature over the full script payload:
     /// script_content + sorted variables + sorted helper file metadata.
-    /// Server must sign the same canonical payload.
+    /// Server signs the same canonical payload with the customer's RSA private key.
     /// Canonical format: script_content + \n + sorted variables JSON + \n + sorted files JSON
     /// Variables: [["key","value"],...] sorted by key
     /// Files: [["filename","download_url"],...] sorted by filename
+    /// Signature field is base64-encoded.
     /// </summary>
-    private bool VerifyScriptSignature(PendingScript script, string? secret)
+    private bool VerifyScriptSignature(PendingScript script, string? publicKeyPem)
     {
-        if (string.IsNullOrEmpty(secret))
+        if (string.IsNullOrEmpty(publicKeyPem))
         {
-            _logger.LogError("Script rejected: no signing secret configured — re-register agent");
+            _logger.LogError("Script rejected: no signing public key configured — reinstall agent");
             return false;
         }
 
@@ -313,18 +443,38 @@ public class ScriptExecutor
             payload.Append("[]");
         }
 
-        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
-        var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(payload.ToString()));
-        var computed = Convert.ToHexString(hash).ToLowerInvariant();
-
-        if (!CryptographicOperations.FixedTimeEquals(
-            Encoding.UTF8.GetBytes(computed),
-            Encoding.UTF8.GetBytes(script.ScriptSignature)))
+        try
         {
-            _logger.LogError("Script rejected: HMAC signature verification failed — possible tampering");
+            // PEM stored in config.json has literal \n — convert to real newlines
+            var pem = publicKeyPem.Replace("\\n", "\n");
+
+            using var rsa = RSA.Create();
+            rsa.ImportFromPem(pem);
+
+            var payloadBytes = Encoding.UTF8.GetBytes(payload.ToString());
+            var signatureBytes = Convert.FromBase64String(script.ScriptSignature);
+
+            // L7: Pss uses salt length = hash length (32 bytes for SHA-256) by .NET convention.
+            // This is the PKCS#1 v2.2 recommended salt length. Explicit comment prevents
+            // future ambiguity about which salt length this deployment expects.
+            var valid = rsa.VerifyData(
+                payloadBytes,
+                signatureBytes,
+                HashAlgorithmName.SHA256,
+                RSASignaturePadding.Pss); // salt = 32 bytes (SHA-256 hash length)
+
+            if (!valid)
+            {
+                _logger.LogError("Script rejected: RSA-PSS signature verification failed — possible tampering");
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Script rejected: signature verification error");
             return false;
         }
-
-        return true;
     }
 }

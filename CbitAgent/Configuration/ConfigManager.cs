@@ -1,4 +1,5 @@
 using System.Security.AccessControl;
+using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Win32;
@@ -70,6 +71,43 @@ public class ConfigManager
                 }
             }
 
+            // If config.json has no signing_public_key, read from registry
+            // (written by MSI installer from SIGNING_PUBLIC_KEY property)
+            if (string.IsNullOrEmpty(_config.SigningPublicKey))
+            {
+                var regPubKey = GetRegistrySigningPublicKey();
+                if (regPubKey != null)
+                {
+                    _config.SigningPublicKey = regPubKey;
+                    _logger.LogInformation("Using signing public key from registry, saving to config.json");
+                    Save();
+                }
+                else
+                {
+                    _logger.LogWarning("No signing public key configured — scripts cannot be verified");
+                }
+            }
+
+            // L6: Validate SigningPublicKey by attempting RSA import at load time.
+            // Clears the key if it is malformed so scripts are rejected rather than
+            // silently passing a broken verification path.
+            if (!string.IsNullOrEmpty(_config.SigningPublicKey))
+            {
+                var pem = _config.SigningPublicKey.Replace("\\n", "\n");
+                try
+                {
+                    using var rsa = RSA.Create();
+                    rsa.ImportFromPem(pem);
+                    _logger.LogDebug("Signing public key validated successfully (RSA import ok)");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex,
+                        "Signing public key is malformed — clearing. Scripts cannot be verified until reinstall.");
+                    _config.SigningPublicKey = null;
+                }
+            }
+
             return _config;
         }
     }
@@ -133,28 +171,81 @@ public class ConfigManager
         return null;
     }
 
-    public void UpdateRegistration(string agentId, string agentToken, int checkInInterval, string? scriptSigningSecret = null)
+    private string? GetRegistrySigningPublicKey()
+    {
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\CBIT\Agent");
+            var value = key?.GetValue("SigningPublicKey") as string;
+            if (!string.IsNullOrEmpty(value) && value != "NONE")
+                return value;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to read signing public key from registry");
+        }
+        return null;
+    }
+
+    public void UpdateRegistration(string agentId, string agentToken, int checkInInterval)
     {
         lock (_lock)
         {
             _config.AgentId = agentId;
             _config.AgentToken = agentToken;
             _config.CheckInIntervalMinutes = checkInInterval;
-            if (!string.IsNullOrEmpty(scriptSigningSecret))
-                _config.ScriptSigningSecret = scriptSigningSecret;
             Save();
         }
     }
 
-    public void UpdateScriptSigningSecret(string? secret)
+    /// <summary>
+    /// Called after successful registration. Clears the enrollment key (customer_key) from
+    /// in-memory config, config.json, and the registry — it is no longer needed once the
+    /// agent has an agent_id and agent_token.
+    ///
+    /// Re-registration flow (on 401): The MSI writes the key back to the registry on reinstall.
+    /// Call TryRefreshCustomerKey() before re-registering; if the key is gone (already consumed
+    /// and agent not reinstalled), re-registration requires a fresh MSI install.
+    /// </summary>
+    public void ClearEnrollmentKey()
     {
         lock (_lock)
         {
-            if (!string.IsNullOrEmpty(secret) && secret != _config.ScriptSigningSecret)
+            _config.CustomerKey = string.Empty;
+            Save(); // Persists empty customer_key to config.json
+
+            // Also delete from registry so the secret is not retained anywhere on disk
+            try
             {
-                _config.ScriptSigningSecret = secret;
-                Save();
+                using var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\CBIT\Agent", writable: true);
+                key?.DeleteValue("CustomerKey", throwOnMissingValue: false);
             }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to delete customer key from registry — continuing");
+            }
+
+            _logger.LogInformation("Registration complete — enrollment key removed from config and registry");
+        }
+    }
+
+    /// <summary>
+    /// Attempts to re-read the customer key from the registry. Returns true if a valid key
+    /// was found and set in the in-memory config. Used before re-registration on 401 —
+    /// the key will be present if the agent was recently reinstalled (MSI re-populates it).
+    /// </summary>
+    public bool TryRefreshCustomerKey()
+    {
+        lock (_lock)
+        {
+            var regKey = GetRegistryCustomerKey();
+            if (regKey != null)
+            {
+                _config.CustomerKey = regKey;
+                _logger.LogInformation("Customer key refreshed from registry for re-registration");
+                return true;
+            }
+            return false;
         }
     }
 

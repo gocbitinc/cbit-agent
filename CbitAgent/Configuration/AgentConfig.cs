@@ -19,8 +19,8 @@ public class AgentConfig
     [JsonPropertyName("check_in_interval_minutes")]
     public int CheckInIntervalMinutes { get; set; } = 5;
 
-    [JsonPropertyName("script_signing_secret")]
-    public string? ScriptSigningSecret { get; set; }
+    [JsonPropertyName("signing_public_key")]
+    public string? SigningPublicKey { get; set; }
 
     [JsonPropertyName("screenconnect_instance_id")]
     public string? ScreenConnectInstanceId { get; set; }

@@ -21,6 +21,17 @@ public class TerminalSession : IDisposable
 
     public string SessionId => _sessionId;
 
+    /// <summary>UTC timestamp when this session was created. Set once at construction.</summary>
+    public DateTime StartedAtUtc { get; } = DateTime.UtcNow;
+
+    /// <summary>
+    /// UTC timestamp of the last activity on this session — updated whenever output is
+    /// received from the PowerShell process or input is written from the server.
+    /// Used by the watchdog in WebSocketTerminalClient to detect orphaned sessions.
+    /// Approximate: updated from the stream-read thread; no strict atomicity required.
+    /// </summary>
+    public DateTime LastActivityUtc { get; private set; } = DateTime.UtcNow;
+
     public TerminalSession(
         string sessionId,
         ILogger logger,
@@ -81,6 +92,7 @@ public class TerminalSession : IDisposable
         {
             _process.StandardInput.Write(data);
             _process.StandardInput.Flush();
+            LastActivityUtc = DateTime.UtcNow;
         }
         catch (Exception ex)
         {
@@ -120,6 +132,7 @@ public class TerminalSession : IDisposable
                 var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, _cts.Token);
                 if (bytesRead == 0) break; // stream closed
                 var text = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                LastActivityUtc = DateTime.UtcNow;
                 await _onOutput(_sessionId, text);
             }
         }
