@@ -21,4 +21,12 @@ public class DiskInfo
 
     [JsonPropertyName("file_system")]
     public string FileSystem { get; set; } = string.Empty;
+
+    /// <summary>
+    /// SMART health status derived from predict_failure for the physical disk backing this volume.
+    /// Values: "critical" (predict_failure=true), "healthy" (predict_failure=false), "unknown" (SMART unavailable).
+    /// Set before every check-in payload is sent.
+    /// </summary>
+    [JsonPropertyName("smart_status")]
+    public string SmartStatus { get; set; } = "unknown";
 }

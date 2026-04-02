@@ -1,5 +1,44 @@
 # CBIT Agent — Progress
 
+## 2026-04-01: Set smart_status on disk entries from predict_failure
+
+### Problem
+`DiskInfo` had no `smart_status` field — every disk entry was sent to the server with `smart_status` absent (null). The SMART `predict_failure` value was collected but never exposed at the disk level in the check-in payload.
+
+### Fix
+
+**`Models/DiskInfo.cs`**
+Added `SmartStatus` property (`string`, JSON: `"smart_status"`, default `"unknown"`). Every `DiskInfo` object now always carries a `smart_status` value before the check-in payload is serialised.
+
+**`Services/DiskInfoCollector.cs`**
+Added `BuildDriveSmartStatusMap()` — a private helper that:
+1. Queries `MSStorageDriver_FailurePredictStatus` (root\WMI) to obtain `predict_failure` per physical disk. Disk index is extracted from the `InstanceName` field via regex (`Harddisk(\d+)`) with an incremental-index fallback.
+2. Walks `Win32_DiskDrive → Win32_DiskPartition → Win32_LogicalDisk` via WQL ASSOCIATORS to map each drive letter to its physical disk index.
+3. Combines both to produce a `Dictionary<string, string>` of drive letter → `"critical"` / `"healthy"` / `"unknown"`.
+4. Returns an empty dictionary (all drives default to `"unknown"`) when SMART is unavailable (`ManagementException` or outer exception).
+
+`CollectDisks()` now calls `BuildDriveSmartStatusMap()` before iterating `DriveInfo.GetDrives()` and sets `SmartStatus` on each `DiskInfo` from the map (`"unknown"` when the drive letter is not in the map).
+
+Also corrected `CollectSmartData()`: `Status = predictFailure ? "warning"` → `"critical"` — aligns `SmartData.Status` with the new `smart_status` vocabulary.
+
+### Status values
+| Condition | smart_status |
+|-----------|-------------|
+| `predict_failure = true` | `"critical"` |
+| `predict_failure = false` | `"healthy"` |
+| SMART unavailable / drive not mapped | `"unknown"` |
+
+### Files Changed
+| File | Change |
+|------|--------|
+| `Models/DiskInfo.cs` | Added `SmartStatus` (`string`, JSON `"smart_status"`, default `"unknown"`) |
+| `Services/DiskInfoCollector.cs` | Added `BuildDriveSmartStatusMap()`; `CollectDisks()` sets `SmartStatus`; `CollectSmartData()` uses `"critical"` not `"warning"` |
+
+### Build
+0 errors, 0 warnings (Release mode).
+
+---
+
 ## 2026-03-31: Security Fixes — Batch 4 (12 Low-severity findings)
 
 ### L1 — TLS floor on HttpClient

@@ -4,7 +4,7 @@
 C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit.com). Part of a 10-phase internal MSP platform replacing SyncroMSP. This repo contains the Windows agent only — the server (Node.js/PostgreSQL/React) runs on a separate Linux VM.
 
 ## Current State
-- Agent registers with server, checks in every 5 minutes, reports system info, network, disks, SMART, installed apps, patches, ScreenConnect GUID, CPU/RAM usage, pending reboot, Defender status, BitLocker status, local admins
+- Agent registers with server, checks in every 5 minutes, reports system info, network, disks (with `smart_status`), SMART, installed apps, patches, ScreenConnect GUID, CPU/RAM usage, pending reboot, Defender status, BitLocker status, local admins
 - WebSocket terminal: PowerShell only (CMD removed — stdout buffering unsolvable without ConPTY), agent echoes input back, raw byte stream reading
 - WebSocket handles scan_updates, install_updates, install_kb, and reboot commands
 - Windows Update executor: scan, download, install KBs, policy-based filtering, reboot detection
@@ -41,7 +41,7 @@ C# Windows Service agent for the CBIT MSP Platform "Jarvis" (https://axis.gocbit
 - Services/ApiClient.cs — HTTP client with retry, update job result reporting, terminal session token request
 - Services/SystemInfoCollector.cs — WMI queries
 - Services/NetworkInfoCollector.cs — all adapters (physical/virtual/VPN/tunnel/loopback), all IPs per adapter, WiFi, WAN IP
-- Services/DiskInfoCollector.cs — drives, SMART
+- Services/DiskInfoCollector.cs — drives (with smart_status via WMI correlation), SMART data
 - Services/InstalledAppsCollector.cs — registry query
 - Services/PatchInfoCollector.cs — WMI + WUApiLib
 - Services/ScreenConnectDetector.cs — registry ImagePath parse for session GUID (s= parameter)
